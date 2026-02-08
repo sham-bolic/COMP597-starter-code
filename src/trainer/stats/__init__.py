@@ -9,6 +9,7 @@ from src.trainer.stats.base import TrainerStats
 from src.trainer.stats.noop import NOOPTrainerStats
 from src.trainer.stats.simple import SimpleTrainerStats
 from src.trainer.stats.codecarbon import CodeCarbonStats
+from src.trainer.stats.resource_util import ResourceUtilStats
 from src.trainer.stats.utils import *
 import src.auto_discovery as auto_discovery
 import src.config as config
