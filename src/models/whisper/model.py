@@ -11,10 +11,11 @@ import torch.optim as optim
 import torch.utils.data as data
 import transformers
 
-from transformers import AutoProcessor, WhisperForConditionalGeneration
+from transformers import AutoProcessor, WhisperConfig, WhisperForAudioClassification
 
 """
-This file contains the code to train a whisper-tiny model using Simple trainer (src/trainer/simple.py).
+This file contains the code to train a whisper-tiny model for audio classification
+using Simple trainer (src/trainer/simple.py).
 It is based on the whisper-tiny model from HuggingFace Transformers.
 https://huggingface.co/openai/whisper-tiny
 """
@@ -28,9 +29,17 @@ def whisper_collator(batch):
     }
 
 def whisper_init(conf: config.Config, dataset: data.Dataset) -> Tuple[trainer.Trainer, Optional[Dict]]:
-    
+    num_labels = getattr(
+        conf.data_configs.synthetic_whisper, "num_labels", 10
+    )
+
+    model_config = WhisperConfig.from_pretrained("openai/whisper-tiny")
+    model_config.num_labels = num_labels
+
     processor = AutoProcessor.from_pretrained("openai/whisper-tiny")
-    model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny")
+    model = WhisperForAudioClassification.from_pretrained(
+        "openai/whisper-tiny", config=model_config
+    )
 
     loader = data.DataLoader(
         dataset,
