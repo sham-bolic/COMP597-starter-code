@@ -1,0 +1,186 @@
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                             SLURM Configuration                                            │
+├─────────────────────────────┬──────────────────────────────────────────────────────────────────────────────┤
+│ Variable                    │ Value                                                                        │
+├─────────────────────────────┼──────────────────────────────────────────────────────────────────────────────┤
+│ COMP597_SLURM_ACCOUNT       │ energy-efficiency-comp597                                                    │
+│ COMP597_SLURM_CONFIG        │ /home/2023/mfong/Win2026/COMP597/COMP597-starter-code/config/slurm_config.sh │
+│ COMP597_SLURM_CONFIG_LOG    │ true                                                                         │
+│ COMP597_SLURM_CPUS_PER_TASK │ 4                                                                            │
+│ COMP597_SLURM_JOB_SCRIPT    │ /home/2023/mfong/Win2026/COMP597/COMP597-starter-code/scripts/job.sh         │
+│ COMP597_SLURM_MIN_MEM       │ 4GB                                                                          │
+│ COMP597_SLURM_NODELIST      │ gpu-teach-03                                                                 │
+│ COMP597_SLURM_NTASKS        │ 1                                                                            │
+│ COMP597_SLURM_NUM_GPUS      │ 1                                                                            │
+│ COMP597_SLURM_PARTITION     │ all                                                                          │
+│ COMP597_SLURM_QOS           │ comp597                                                                      │
+│ COMP597_SLURM_TIME_LIMIT    │ 5:00                                                                         │
+└─────────────────────────────┴──────────────────────────────────────────────────────────────────────────────┘
+
+
+┌────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                SLURM Hardware Configuration                                │
+├────────────────────────┬───────────────────────────────────────────────────────────────────┤
+│ Variable               │ Value                                                             │
+├────────────────────────┼───────────────────────────────────────────────────────────────────┤
+│ SLURM_CPUS_ON_NODE     │ 4                                                                 │
+│ SLURM_CPUS_PER_TASK    │ 4                                                                 │
+│ SLURM_CPU_BIND         │ quiet,mask_cpu:0x000000000000000400000001000000000000000400000001 │
+│ SLURM_CPU_BIND_LIST    │ 0x000000000000000400000001000000000000000400000001                │
+│ SLURM_CPU_BIND_TYPE    │ mask_cpu:                                                         │
+│ SLURM_CPU_BIND_VERBOSE │ quiet                                                             │
+│ SLURM_GPUS             │ 1                                                                 │
+│ SLURM_GPUS_ON_NODE     │ 1                                                                 │
+│ SLURM_MEM_PER_NODE     │ 4096                                                              │
+└────────────────────────┴───────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────┐
+│                    SLURM Job Info                   │
+├─────────────────────────┬───────────────────────────┤
+│ Variable                │ Value                     │
+├─────────────────────────┼───────────────────────────┤
+│ SLURM_JOBID             │ 14061                     │
+│ SLURM_JOB_ACCOUNT       │ energy-efficiency-comp597 │
+│ SLURM_JOB_CPUS_PER_NODE │ 4                         │
+│ SLURM_JOB_END_TIME      │ 1770753026                │
+│ SLURM_JOB_GID           │ 65534                     │
+│ SLURM_JOB_GROUP         │ nogroup                   │
+│ SLURM_JOB_ID            │ 14061                     │
+│ SLURM_JOB_NAME          │ job.sh                    │
+│ SLURM_JOB_NODELIST      │ gpu-teach-03              │
+│ SLURM_JOB_NUM_NODES     │ 1                         │
+│ SLURM_JOB_PARTITION     │ all                       │
+│ SLURM_JOB_QOS           │ comp597                   │
+│ SLURM_JOB_START_TIME    │ 1770752726                │
+│ SLURM_JOB_UID           │ 1479096                   │
+│ SLURM_JOB_USER          │ mfong                     │
+└─────────────────────────┴───────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                SLURM Job Configuration                                               │
+├─────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────┤
+│ Variable                                │ Value                                                                      │
+├─────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+│ COMP597_JOB_CACHE_DIR                   │ /mnt/teaching/slurm/mfong/.cache                                           │
+│ COMP597_JOB_COMMAND                     │ /home/2023/mfong/Win2026/COMP597/COMP597-starter-code/scripts/launch.sh    │
+│ COMP597_JOB_CONDA_DIR                   │ /home/slurm/comp597/conda                                                  │
+│ COMP597_JOB_CONDA_ENV_DIR               │ /home/slurm/comp597/conda/envs                                             │
+│ COMP597_JOB_CONDA_ENV_NAME              │ comp597                                                                    │
+│ COMP597_JOB_CONDA_ENV_PREFIX            │ /home/slurm/comp597/conda/envs/comp597                                     │
+│ COMP597_JOB_CONFIG                      │ /home/2023/mfong/Win2026/COMP597/COMP597-starter-code/config/job_config.sh │
+│ COMP597_JOB_CONFIG_LOG                  │ true                                                                       │
+│ COMP597_JOB_SCRATCH_STORAGE             │ /mnt/teaching/slurm                                                        │
+│ COMP597_JOB_STORAGE_PARTITION           │ /home/slurm/comp597                                                        │
+│ COMP597_JOB_STUDENTS_BASE_DIR           │ /home/slurm/comp597/students                                               │
+│ COMP597_JOB_STUDENT_SCRATCH_STORAGE_DIR │ /mnt/teaching/slurm/mfong                                                  │
+│ COMP597_JOB_STUDENT_STORAGE_DIR         │ /home/slurm/comp597/students/mfong                                         │
+│ COMP597_JOB_WORKING_DIRECTORY           │                                                                            │
+└─────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────┘
+
+
+┌────────────────────────────────────────────────────────────────┐
+│                   Conda Environment Variables                  │
+├───────────────────────┬────────────────────────────────────────┤
+│ Variable              │ Value                                  │
+├───────────────────────┼────────────────────────────────────────┤
+│ CONDA_DEFAULT_ENV     │ comp597                                │
+│ CONDA_EXE             │ /usr/local/pkgs/anaconda/bin/conda     │
+│ CONDA_PREFIX          │ /home/slurm/comp597/conda/envs/comp597 │
+│ CONDA_PREFIX_1        │ /usr/local/pkgs/anaconda               │
+│ CONDA_PROMPT_MODIFIER │ (comp597)                              │
+│ CONDA_PYTHON_EXE      │ /usr/local/pkgs/anaconda/bin/python    │
+│ CONDA_SHLVL           │ 2                                      │
+└───────────────────────┴────────────────────────────────────────┘
+
+
+=============================================================
+Loading Existing Data
+=============================================================
+  gpu_util: 12%  cpu_util: 0.0%  gpu_mem: 2.30 GB  cpu_mem: 4.81 GB  io_read: 0.01 GB  io_write: 0.00 GB
+  gpu_util: 74%  cpu_util: 145.0%  gpu_mem: 2.55 GB  cpu_mem: 4.61 GB  io_read: 0.40 GB  io_write: 0.00 GB
+  gpu_util: 68%  cpu_util: 136.8%  gpu_mem: 2.55 GB  cpu_mem: 4.53 GB  io_read: 0.79 GB  io_write: 0.00 GB
+  gpu_util: 62%  cpu_util: 131.1%  gpu_mem: 2.55 GB  cpu_mem: 4.73 GB  io_read: 1.17 GB  io_write: 0.00 GB
+  gpu_util: 73%  cpu_util: 125.3%  gpu_mem: 2.55 GB  cpu_mem: 4.75 GB  io_read: 1.56 GB  io_write: 0.00 GB
+  gpu_util: 72%  cpu_util: 123.0%  gpu_mem: 2.55 GB  cpu_mem: 4.62 GB  io_read: 1.94 GB  io_write: 0.00 GB
+  gpu_util: 76%  cpu_util: 132.6%  gpu_mem: 2.55 GB  cpu_mem: 3.81 GB  io_read: 2.33 GB  io_write: 0.00 GB
+  gpu_util: 71%  cpu_util: 132.8%  gpu_mem: 2.55 GB  cpu_mem: 4.19 GB  io_read: 2.71 GB  io_write: 0.00 GB
+  gpu_util: 75%  cpu_util: 136.3%  gpu_mem: 2.55 GB  cpu_mem: 4.58 GB  io_read: 3.09 GB  io_write: 0.00 GB
+  gpu_util: 67%  cpu_util: 113.5%  gpu_mem: 2.55 GB  cpu_mem: 4.66 GB  io_read: 3.48 GB  io_write: 0.00 GB
+  gpu_util: 69%  cpu_util: 127.9%  gpu_mem: 2.55 GB  cpu_mem: 4.78 GB  io_read: 3.86 GB  io_write: 0.00 GB
+  gpu_util: 44%  cpu_util: 129.8%  gpu_mem: 2.55 GB  cpu_mem: 4.81 GB  io_read: 4.25 GB  io_write: 0.00 GB
+  gpu_util: 62%  cpu_util: 146.2%  gpu_mem: 2.55 GB  cpu_mem: 4.81 GB  io_read: 4.63 GB  io_write: 0.00 GB
+  gpu_util: 67%  cpu_util: 141.2%  gpu_mem: 2.55 GB  cpu_mem: 4.81 GB  io_read: 5.02 GB  io_write: 0.00 GB
+AVG : step 47.83972935999995 -- forward 13.12287456727272 -- backward 27.003712647999972 -- optimizer step 7.183765260363637
+###############        Step        ###############
+mean   :  47.8397
+q0.001 :  45.7379
+q0.01  :  45.8436
+q0.1   :  46.1057
+q0.25  :  46.3383
+q0.5   :  46.6729
+q0.75  :  47.0417
+q0.9   :  47.3775
+q0.99  :  48.4765
+q0.999 :  68.5818
+###############      FORWARD       ###############
+mean   :  13.1229
+q0.001 :  12.0878
+q0.01  :  12.1170
+q0.1   :  12.1798
+q0.25  :  12.2286
+q0.5   :  12.3052
+q0.75  :  12.4049
+q0.9   :  12.5884
+q0.99  :  13.2057
+q0.999 :  33.7736
+###############      BACKWARD      ###############
+mean   :  27.0037
+q0.001 :  26.2236
+q0.01  :  26.2873
+q0.1   :  26.4239
+q0.25  :  26.5686
+q0.5   :  26.7454
+q0.75  :  26.9823
+q0.9   :  27.2266
+q0.99  :  28.0225
+q0.999 :  29.6312
+###############   OPTIMIZER STEP   ###############
+mean   :  7.1838
+q0.001 :  6.7835
+q0.01  :  6.8248
+q0.1   :  6.8632
+q0.25  :  6.8941
+q0.5   :  6.9921
+q0.75  :  7.0841
+q0.9   :  7.3483
+q0.99  :  7.9577
+q0.999 :  28.3905
+###############   GPU UTILIZATION (%)   ###############
+mean   : 65.7367 %
+q0.25  : 65.0000 %
+q0.5   : 68.0000 %
+q0.75  : 72.0000 %
+q0.999 : 77.0000 %
+###############   CPU UTILIZATION (%)   ###############
+mean   : 134.2598 %
+q0.25  : 127.2000 %
+q0.5   : 131.1000 %
+q0.75  : 142.0000 %
+q0.999 : 232.3000 %
+###############   GPU MEMORY USAGE   ###############
+mean   : 2.5513 GB
+q0.25  : 2.5514 GB
+q0.5   : 2.5514 GB
+q0.75  : 2.5514 GB
+q0.999 : 2.5514 GB
+###############   CPU MEMORY (RSS)   ###############
+mean   : 4.6145 GB
+q0.25  : 4.5372 GB
+q0.5   : 4.7112 GB
+q0.75  : 4.8070 GB
+q0.999 : 4.8219 GB
+###############   I/O TOTALS   ###############
+Total I/O Read: 5.31 GB
+Total I/O Write: 0.00 GB
