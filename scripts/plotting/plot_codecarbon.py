@@ -9,6 +9,7 @@ Handles both:
 Usage:
     python scripts/plotting/plot_codecarbon.py
     python scripts/plotting/plot_codecarbon.py --zoom 50
+    python scripts/plotting/plot_codecarbon.py --smooth 10  # rolling average (default: 5)
 
 Reads from logs/ (*-steps.csv, *-substeps.csv, or code_carbon_base.csv).
 Writes to scripts/plotting/.
@@ -86,6 +87,13 @@ def _setup_style() -> None:
             pass
 
 
+def _smooth_series(series: pd.Series, window: int) -> pd.Series:
+    """Apply centered rolling mean. No-op if window <= 1."""
+    if window <= 1:
+        return series
+    return series.rolling(window=window, center=True, min_periods=1).mean()
+
+
 def plot_full_run_summary(df: pd.DataFrame, output_path: Path) -> None:
     """Dashboard for a single-run CodeCarbon summary (one row)."""
     _setup_style()
@@ -153,6 +161,7 @@ def plot_step_data(
     output_path: Path,
     zoom: Optional[int] = None,
     zoom_start: int = 1,
+    smooth: int = 1,
 ) -> None:
     """Line plots for step/substep-level CodeCarbon data (multiple rows)."""
     _setup_style()
@@ -192,11 +201,12 @@ def plot_step_data(
         if col not in df.columns:
             ax.text(0.5, 0.5, f"Column '{col}' not found", ha="center", va="center", transform=ax.transAxes)
             continue
-        ax.plot(x, df[col], linewidth=1.2, color=color)
+        y = _smooth_series(df[col], smooth)
+        ax.plot(x, y, linewidth=1.2, color=color)
         ax.set_ylabel(ylabel, fontsize=9)
         ax.set_title(ylabel, fontsize=10, fontweight="medium")
         ax.grid(True, alpha=0.3)
-        ymax = df[col].max()
+        ymax = y.max()
         ax.set_ylim(0, ymax * 1.15 if ymax > 0 else 1)
 
     axes[-1].set_xlabel(xlabel, fontsize=10)
@@ -398,6 +408,7 @@ def _process_file(
     output_dir: Path,
     zoom: Optional[int],
     zoom_start: int,
+    smooth: int = 1,
 ) -> None:
     """Process a single CodeCarbon CSV and produce appropriate plots."""
     df = pd.read_csv(input_path)
@@ -412,12 +423,12 @@ def _process_file(
         return
 
     if csv_type == "step":
-        plot_step_data(df, output_dir / f"{base_name}_steps.png", zoom=None, zoom_start=zoom_start)
+        plot_step_data(df, output_dir / f"{base_name}_steps.png", zoom=None, zoom_start=zoom_start, smooth=smooth)
         if zoom is not None:
             zoom_end = zoom_start + zoom - 1
             plot_step_data(
                 df, output_dir / f"{base_name}_steps_zoom_{zoom_start}-{zoom_end}.png",
-                zoom=zoom, zoom_start=zoom_start
+                zoom=zoom, zoom_start=zoom_start, smooth=smooth
             )
     elif csv_type == "substep":
         plot_phases_boxplot(df, output_dir / f"{base_name}_phases.png", zoom=None, zoom_start=zoom_start)
@@ -432,7 +443,7 @@ def _process_file(
             plot_phases_pie(df, output_dir / f"{base_name}_phases_pie{suffix}.png", zoom=zoom, zoom_start=zoom_start)
             plot_energy_by_phase(df, output_dir / f"{base_name}_energy_by_phase{suffix}.png", zoom=zoom, zoom_start=zoom_start)
     else:
-        plot_step_data(df, output_dir / f"{base_name}_steps.png", zoom=zoom, zoom_start=zoom_start)
+        plot_step_data(df, output_dir / f"{base_name}_steps.png", zoom=zoom, zoom_start=zoom_start, smooth=smooth)
 
     if "emissions" in df.columns and "energy_consumed" in df.columns:
         plot_full_run_summary(
@@ -462,6 +473,13 @@ def main():
         metavar="STEP",
         help="First step for zoom window (default: 1)",
     )
+    parser.add_argument(
+        "--smooth", "-s",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Rolling window size for line smoothing (default: 5). Use 1 to disable.",
+    )
     args = parser.parse_args()
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -477,7 +495,7 @@ def main():
             raise FileNotFoundError(f"No *-steps.csv, *-substeps.csv, or code_carbon_base.csv in {input_dir}")
 
     for f in files:
-        _process_file(f, output_dir, args.zoom, args.zoom_start)
+        _process_file(f, output_dir, args.zoom, args.zoom_start, args.smooth)
 
 
 if __name__ == "__main__":

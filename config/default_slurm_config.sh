@@ -46,7 +46,7 @@ export COMP597_SLURM_JOB_SCRIPT=${scripts_dir}/job.sh
 export COMP597_SLURM_MIN_MEM="4GB"
 # The SLURM nodes requested on which the job will execute.
 # See --nodelist in srun --help
-export COMP597_SLURM_NODELIST="gpu-teach-03"
+export COMP597_SLURM_NODELIST="gpu-grad-01"
 # The number of tasks to run.
 # See --ntasks in srun --help
 export COMP597_SLURM_NTASKS=1

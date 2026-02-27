@@ -21,20 +21,26 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
         device = torch.get_default_device()
     output_path = "."
     output_file = "resource_util.csv"
+    substep_output_file = "resource_util_substeps.csv"
     ru_config = getattr(conf.trainer_stats_configs, "resource_util", None)
     if ru_config is not None:
         output_path = getattr(ru_config, "output_dir", ".")
         output_file = getattr(ru_config, "output_file", "resource_util.csv")
+        substep_output_file = getattr(ru_config, "substep_output_file", "resource_util_substeps.csv")
     csv_path = os.path.join(output_path, output_file)
-    return ResourceUtilStats(device=device, csv_path=csv_path)
+    substep_csv_path = os.path.join(output_path, substep_output_file)
+    return ResourceUtilStats(device=device, csv_path=csv_path, substep_csv_path=substep_csv_path)
 
 class ResourceUtilStats(simple.SimpleTrainerStats):
+    # Disable tqdm to avoid terminal conflicts (metrics are written to CSV)
+    SUPPRESS_PROGRESS_BAR = True
 
-    def __init__(self, device, csv_path="resource_util.csv"):
+    def __init__(self, device, csv_path="resource_util.csv", substep_csv_path=None):
         super().__init__(device)
         self.csv_path = csv_path
-        self._csv_file = None
-        self._csv_writer = None
+        self.substep_csv_path = substep_csv_path or csv_path.replace(".csv", "_substeps.csv")
+        self._rows = []
+        self._substep_rows = []
 
         pynvml.nvmlInit()
         gpu_index = device.index if device.index is not None else 0
@@ -43,7 +49,7 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         self.process = psutil.Process()
 
         self.gpu_util_stats = utils.RunningStat()       # GPU utilization %
-        self.gpu_mem_usage_stats = utils.RunningStat()   # consumed/allocated % (this process)
+        self.gpu_mem_usage_stats = utils.RunningStat()   # GPU memory usage (from NVML)
         self.cpu_util_stats = utils.RunningStat()        # CPU utilization % (this process)
         self.cpu_mem_stats = utils.RunningStat()        # Process RAM (RSS)
         self.ram_usage_stats = utils.RunningStat()      # System RAM used (whole machine)
@@ -60,60 +66,86 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         output_dir = os.path.dirname(self.csv_path)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-        self._csv_file = open(self.csv_path, "w", newline="")
-        self._csv_writer = csv.writer(self._csv_file)
-        self._csv_writer.writerow([
-            "step", "phase", "gpu_util", "cpu_util", "gpu_mem_pct", "cpu_mem_gb", "ram_gb",
-            "io_read_gb", "io_write_gb"
-        ])
+        self._rows = []
+        self._substep_rows = []
 
-    def _record_phase_metrics(self, phase: str) -> None:
-        """Capture and write resource metrics for a training phase."""
-        step_num = int(self.step_stats.stat.average.n) + 1  # 1-indexed, before stop_step
+    def _record_substep(self, phase: str):
+        """Record resource stats at end of a phase (forward/backward/optimizer)."""
+        if self.device.type != "cuda":
+            return
+        torch.cuda.synchronize(self.device)
+        step_num = int(self.step_stats.stat.average.n) + 1  # current step (1-based)
         util = pynvml.nvmlDeviceGetUtilizationRates(self.gpu_handle)
+        mem_info = pynvml.nvmlDeviceGetMemoryInfo(self.gpu_handle)
+        gpu_util = util.gpu
+        gpu_mem_gb = mem_info.used / 1e9
+        cpu_util = self.process.cpu_percent()
+        cpu_mem_gb = self.process.memory_info().rss / 1e9
+        ram_gb = psutil.virtual_memory().used / 1e9
         io = self.process.io_counters()
         io_read = (io.read_bytes - self.io_read_start) / 1e9
         io_write = (io.write_bytes - self.io_write_start) / 1e9
-        if self._csv_writer is not None:
-            allocated = torch.cuda.memory_allocated(self.device)
-            reserved = torch.cuda.memory_reserved(self.device)
-            gpu_mem_pct = 100.0 * allocated / reserved if reserved > 0 else 0
-            self._csv_writer.writerow([
-                step_num,
-                phase,
-                util.gpu,
-                self.process.cpu_percent(),
-                gpu_mem_pct,
-                self.process.memory_info().rss / 1e9,
-                psutil.virtual_memory().used / 1e9,
-                io_read,
-                io_write,
-            ])
-            self._csv_file.flush()
+        self._substep_rows.append([
+            step_num,
+            phase,
+            gpu_util,
+            cpu_util,
+            gpu_mem_gb,
+            cpu_mem_gb,
+            ram_gb,
+            io_read,
+            io_write,
+        ])
 
-    def stop_forward(self):
-        super().stop_forward()
-        self._record_phase_metrics("forward")
-
-    def stop_backward(self):
-        super().stop_backward()
-        self._record_phase_metrics("backward")
-
-    def stop_optimizer_step(self):
-        super().stop_optimizer_step()
-        self._record_phase_metrics("optimizer")
+    def start_step(self):
+        self.step_stats.start()
 
     def stop_step(self):
-        super().stop_step()
+        self.step_stats.stop()
+        step_num = int(self.step_stats.stat.average.n)
         util = pynvml.nvmlDeviceGetUtilizationRates(self.gpu_handle)
+        mem_info = pynvml.nvmlDeviceGetMemoryInfo(self.gpu_handle)
         self.gpu_util_stats.update(util.gpu)
-        allocated = torch.cuda.memory_allocated(self.device)
-        reserved = torch.cuda.memory_reserved(self.device)
-        gpu_mem_pct = 100.0 * allocated / reserved if reserved > 0 else 0
-        self.gpu_mem_usage_stats.update(gpu_mem_pct)
+        self.gpu_mem_usage_stats.update(mem_info.used)
         self.cpu_util_stats.update(self.process.cpu_percent())
         self.cpu_mem_stats.update(self.process.memory_info().rss)
         self.ram_usage_stats.update(psutil.virtual_memory().used)
+
+        io = self.process.io_counters()
+        io_read = (io.read_bytes - self.io_read_start) / 1e9
+        io_write = (io.write_bytes - self.io_write_start) / 1e9
+
+        self._rows.append([
+            step_num,
+            self.gpu_util_stats.get_last(),
+            self.cpu_util_stats.get_last(),
+            self.gpu_mem_usage_stats.get_last() / 1e9,
+            self.cpu_mem_stats.get_last() / 1e9,
+            self.ram_usage_stats.get_last() / 1e9,
+            io_read,
+            io_write,
+        ])
+
+    def start_forward(self):
+        super().start_forward()
+
+    def stop_forward(self):
+        self._record_substep("forward")
+        super().stop_forward()
+
+    def start_backward(self):
+        super().start_backward()
+
+    def stop_backward(self):
+        self._record_substep("backward")
+        super().stop_backward()
+
+    def start_optimizer_step(self):
+        super().start_optimizer_step()
+
+    def stop_optimizer_step(self):
+        self._record_substep("optimizer")
+        super().stop_optimizer_step()
 
     def stop_train(self):
         io = self.process.io_counters()
@@ -129,13 +161,12 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
             print(f"q{q:<5} : {val / divisor:.4f} {unit}")
 
     def log_stats(self):
-        super().log_stats()
         print("###############   GPU UTILIZATION (%)   ###############")
         self._print_quantiles("GPU Util", self.gpu_util_stats, divisor=1.0, unit="%")
         print("###############   CPU UTILIZATION (%)   ###############")
         self._print_quantiles("CPU Util", self.cpu_util_stats, divisor=1.0, unit="%")
-        print("###############   GPU MEMORY (CONSUMED/ALLOCATED %)   ###############")
-        self._print_quantiles("GPU Mem %", self.gpu_mem_usage_stats, divisor=1.0, unit="%")
+        print("###############   GPU MEMORY USAGE   ###############")
+        self._print_quantiles("GPU Mem Usage", self.gpu_mem_usage_stats, divisor=1e9, unit="GB")
         print("###############   CPU MEMORY (RSS)   ###############")
         self._print_quantiles("CPU Mem", self.cpu_mem_stats, divisor=1e9, unit="GB")
         print("###############   RAM USAGE (SYSTEM)   ###############")
@@ -143,11 +174,24 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         print("###############   I/O TOTALS   ###############")
         print(f"Total I/O Read: {self.total_io_read / 1e9:.2f} GB")
         print(f"Total I/O Write: {self.total_io_write / 1e9:.2f} GB")
-        if self._csv_file is not None:
-            self._csv_file.close()
-            self._csv_file = None
-            self._csv_writer = None
-            logger.info(f"Resource utilization saved to {self.csv_path}")
+        with open(self.csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "step", "gpu_util", "cpu_util", "gpu_mem_gb", "cpu_mem_gb", "ram_gb",
+                "io_read_gb", "io_write_gb"
+            ])
+            writer.writerows(self._rows)
+        logger.info(f"Resource utilization saved to {self.csv_path}")
+
+        if self._substep_rows:
+            with open(self.substep_csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "step", "phase", "gpu_util", "cpu_util", "gpu_mem_gb", "cpu_mem_gb", "ram_gb",
+                    "io_read_gb", "io_write_gb"
+                ])
+                writer.writerows(self._substep_rows)
+            logger.info(f"Resource utilization substeps saved to {self.substep_csv_path}")
 
     def log_step(self):
         # Per-step metrics are written to CSV in stop_step(); no console output
