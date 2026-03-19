@@ -11,6 +11,20 @@ SCRIPTS_DIR=$(readlink -f -n "$(dirname "$0")")
 WHISPER_DEFAULT_TRAINER_STATS=codecarbon
 whisper_parse_hyperparams "$@"
 
+# run_repeat.sh / start-whisper-3x.sh set RUN_REPEAT_INDEX; suffix resource_util CSV
+# so repeats do not overwrite (e.g. resource_util.csv -> resource_util_run_2.csv).
+if [[ -n "${RUN_REPEAT_INDEX:-}" && "${WHISPER_TRAINER_STATS}" == "resource_util" ]]; then
+	_ru="${WHISPER_STATS_OUTPUT_FILE}"
+	if [[ "$_ru" == *.* ]]; then
+		_ru_stem="${_ru%.*}"
+		_ru_ext=".${_ru##*.}"
+	else
+		_ru_stem="$_ru"
+		_ru_ext=""
+	fi
+	WHISPER_STATS_OUTPUT_FILE="${_ru_stem}_run_${RUN_REPEAT_INDEX}${_ru_ext}"
+fi
+
 # Literal for expansion on the Slurm job node (see job.sh / default_job_config.sh).
 DATA_PATH_LITERAL='${COMP597_JOB_STUDENT_STORAGE_DIR}/synthetic_whisper_data.pt'
 
