@@ -1,8 +1,9 @@
 import logging
 import os
 logger = logging.getLogger(__name__)
+_level_map = getattr(logging, "getLevelNamesMapping", lambda: {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING, "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL})()
 logging.basicConfig(
-    level=logging.getLevelNamesMapping().get(os.environ.get("COMP597_LOG_LEVEL", "WARNING"), logging.WARNING),
+    level=_level_map.get(os.environ.get("COMP597_LOG_LEVEL", "WARNING"), logging.WARNING),
     format="[{levelname:.4}] : {asctime} : {module:<24.24} : {message}",
     datefmt="%Y-%m-%dT%H:%M:%S",
     style='{',
@@ -60,6 +61,13 @@ def main():
     del model_trainer
 
 if __name__ == "__main__":
+    # Use 'spawn' to avoid "too many fds" when DataLoader uses num_workers > 0.
+    # forkserver/fork inherit file descriptors; spawn starts fresh processes.
+    import multiprocessing
+    try:
+        multiprocessing.set_start_method("spawn")
+    except RuntimeError:
+        pass  # already set
     main()
     gc.collect()
 

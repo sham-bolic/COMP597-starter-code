@@ -41,10 +41,13 @@ def whisper_init(conf: config.Config, dataset: data.Dataset) -> Tuple[trainer.Tr
         "openai/whisper-tiny", config=model_config
     )
 
+    num_workers = getattr(conf.data_configs.synthetic_whisper, "num_workers", 0)
     loader = data.DataLoader(
         dataset,
-        batch_size = conf.batch_size,
-        collate_fn = whisper_collator
+        batch_size=conf.batch_size,
+        collate_fn=whisper_collator,
+        num_workers=num_workers,
+        multiprocessing_context="spawn" if num_workers > 0 else None,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
