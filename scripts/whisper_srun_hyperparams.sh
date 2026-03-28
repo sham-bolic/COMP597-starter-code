@@ -7,6 +7,7 @@
 #   WHISPER_DEFAULT_NUM_WORKERS, WHISPER_DEFAULT_TRAINER_STATS,
 #   WHISPER_DEFAULT_CODECARBON_RUN_NUM, WHISPER_DEFAULT_OUTPUT_DIR,
 #   WHISPER_DEFAULT_STATS_OUTPUT_FILE (legacy: WHISPER_DEFAULT_RESOURCE_UTIL_OUTPUT_FILE)
+#   WHISPER_DEFAULT_N_SAMPLES, WHISPER_DEFAULT_REPEAT, WHISPER_DEFAULT_MEMORY_ONLY
 #
 # Or set WHISPER_BATCH_SIZE / WHISPER_LEARNING_RATE / ... in the environment.
 
@@ -22,10 +23,18 @@ Optional hyperparameters (also settable via WHISPER_* environment variables):
   --learning_rate X   (optional; default 1e-6)
   --num_workers N
        (synonym: --data_configs.synthetic_whisper.num_workers N)
+  --n_samples N
+       (synonym: --data_configs.synthetic_whisper.n_samples N; milabench-style pool size)
+  --repeat N
+       (synonym: --data_configs.synthetic_whisper.repeat N; virtual length = n_samples * repeat)
+  --memory_only 0|1
+       (synonym: --data_configs.synthetic_whisper.memory_only; 1 = RAM only, 0 = use data_path cache)
   --trainer_stats NAME        e.g. codecarbon, resource_util, no-op
   --trainer_stats_configs.codecarbon.run_num N
   --output_dir PATH
-       Directory for trainer-stats output (default: logs). Shared by all backends.
+       Directory for trainer-stats output (default: results/data/batch_<batch>_worker_<num_workers>,
+       e.g. results/data/batch_4_worker_0). Shared by all backends. Override with this flag or
+       WHISPER_OUTPUT_DIR / WHISPER_DEFAULT_OUTPUT_DIR.
   --stats_output_file NAME
        Basename of the resource_util CSV inside --output_dir (default:
        resource_util.csv). Ignored when --trainer_stats is codecarbon (that
@@ -40,9 +49,12 @@ Environment defaults (used when a flag is not passed):
   WHISPER_BATCH_SIZE          (default from script, usually 4)
   WHISPER_LEARNING_RATE       (default 1e-6)
   WHISPER_NUM_WORKERS         (default 0)
+  WHISPER_N_SAMPLES           (default 500)
+  WHISPER_REPEAT              (dataset virtual repeat; default 1. For multi-job repeats see WHISPER_REPEAT_COUNT + start-whisper-3x.sh)
+  WHISPER_MEMORY_ONLY         (default 1)
   WHISPER_TRAINER_STATS       (default from script)
   WHISPER_CODECARBON_RUN_NUM  (default 1)
-  WHISPER_OUTPUT_DIR             (default logs)
+  WHISPER_OUTPUT_DIR             (default results/data/batch_<batch>_worker_<workers>, or WHISPER_DEFAULT_OUTPUT_DIR)
   WHISPER_STATS_OUTPUT_FILE      (default resource_util.csv; resource_util only).
        Legacy env: WHISPER_RESOURCE_UTIL_OUTPUT_FILE / WHISPER_DEFAULT_RESOURCE_UTIL_OUTPUT_FILE
 EOF
@@ -54,8 +66,10 @@ whisper_apply_hyperparam_defaults() {
 	: "${WHISPER_NUM_WORKERS:=${WHISPER_DEFAULT_NUM_WORKERS:-0}}"
 	: "${WHISPER_TRAINER_STATS:=${WHISPER_DEFAULT_TRAINER_STATS:-codecarbon}}"
 	: "${WHISPER_CODECARBON_RUN_NUM:=${WHISPER_DEFAULT_CODECARBON_RUN_NUM:-1}}"
-	: "${WHISPER_OUTPUT_DIR:=${WHISPER_DEFAULT_OUTPUT_DIR:-logs}}"
 	: "${WHISPER_STATS_OUTPUT_FILE:=${WHISPER_DEFAULT_STATS_OUTPUT_FILE:-${WHISPER_RESOURCE_UTIL_OUTPUT_FILE:-${WHISPER_DEFAULT_RESOURCE_UTIL_OUTPUT_FILE:-resource_util.csv}}}}"
+	: "${WHISPER_N_SAMPLES:=${WHISPER_DEFAULT_N_SAMPLES:-500}}"
+	: "${WHISPER_REPEAT:=${WHISPER_DEFAULT_REPEAT:-1}}"
+	: "${WHISPER_MEMORY_ONLY:=${WHISPER_DEFAULT_MEMORY_ONLY:-1}}"
 }
 
 # Input: "$@". Sets WHISPER_* and WHISPER_REST (array).
@@ -86,6 +100,30 @@ whisper_parse_hyperparams() {
 					exit 1
 				}
 				WHISPER_NUM_WORKERS="$2"
+				shift 2
+				;;
+			--n_samples | --data_configs.synthetic_whisper.n_samples)
+				[[ $# -lt 2 ]] && {
+					echo "$(basename "$0"): $1 requires a value" >&2
+					exit 1
+				}
+				WHISPER_N_SAMPLES="$2"
+				shift 2
+				;;
+			--repeat | --data_configs.synthetic_whisper.repeat)
+				[[ $# -lt 2 ]] && {
+					echo "$(basename "$0"): $1 requires a value" >&2
+					exit 1
+				}
+				WHISPER_REPEAT="$2"
+				shift 2
+				;;
+			--memory_only | --data_configs.synthetic_whisper.memory_only)
+				[[ $# -lt 2 ]] && {
+					echo "$(basename "$0"): $1 requires a value" >&2
+					exit 1
+				}
+				WHISPER_MEMORY_ONLY="$2"
 				shift 2
 				;;
 			--trainer_stats)
@@ -130,5 +168,6 @@ whisper_parse_hyperparams() {
 				;;
 		esac
 	done
+	: "${WHISPER_OUTPUT_DIR:=${WHISPER_DEFAULT_OUTPUT_DIR:-results/data/batch_${WHISPER_BATCH_SIZE}_worker_${WHISPER_NUM_WORKERS}}}"
 	WHISPER_REST=("${rest[@]}")
 }

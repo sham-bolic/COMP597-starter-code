@@ -1,9 +1,8 @@
 import logging
 import os
 logger = logging.getLogger(__name__)
-_level_map = getattr(logging, "getLevelNamesMapping", lambda: {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING, "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL})()
 logging.basicConfig(
-    level=_level_map.get(os.environ.get("COMP597_LOG_LEVEL", "WARNING"), logging.WARNING),
+    level=logging.getLevelNamesMapping().get(os.environ.get("COMP597_LOG_LEVEL", "WARNING"), logging.WARNING),
     format="[{levelname:.4}] : {asctime} : {module:<24.24} : {message}",
     datefmt="%Y-%m-%dT%H:%M:%S",
     style='{',

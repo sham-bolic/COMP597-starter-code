@@ -1,6 +1,7 @@
 #!/bin/bash
 # Single entry point for Whisper + synthetic_whisper on Slurm.
 # Learning rate defaults to 1e-6; override with --learning_rate or WHISPER_LEARNING_RATE.
+# Synthetic pool: --n_samples, --repeat, --memory_only (or WHISPER_N_SAMPLES / WHISPER_REPEAT / WHISPER_MEMORY_ONLY).
 # Default trainer stats: codecarbon. For resource-util CSV logging:
 #   ./start-whisper.sh --trainer_stats resource_util
 
@@ -37,6 +38,9 @@ ARGS=(
 	--data synthetic_whisper
 	--data_configs.synthetic_whisper.data_path "${DATA_PATH_LITERAL}"
 	--data_configs.synthetic_whisper.num_workers "${WHISPER_NUM_WORKERS}"
+	--data_configs.synthetic_whisper.n_samples "${WHISPER_N_SAMPLES}"
+	--data_configs.synthetic_whisper.repeat "${WHISPER_REPEAT}"
+	--data_configs.synthetic_whisper.memory_only "${WHISPER_MEMORY_ONLY}"
 	--trainer_stats "${WHISPER_TRAINER_STATS}"
 )
 
