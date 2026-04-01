@@ -12,6 +12,7 @@ import csv
 import pandas as pd
 import src.config as config
 import src.trainer.stats.base as base
+import src.trainer.stats.utils as stats_utils
 import torch
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,14 @@ def construct_trainer_stats(conf : config.Config, **kwargs) -> base.TrainerStats
     else:
         logger.warning("No device provided to codecarbon trainer stats. Using default PyTorch device")
         device = torch.get_default_device() 
-    return CodeCarbonStats(device, conf.trainer_stats_configs.codecarbon.run_num, conf.trainer_stats_configs.codecarbon.project_name, conf.trainer_stats_configs.codecarbon.output_dir)
+    fp = stats_utils.trainer_stats_file_prefix(conf)
+    return CodeCarbonStats(
+        device,
+        conf.trainer_stats_configs.codecarbon.run_num,
+        conf.trainer_stats_configs.codecarbon.project_name,
+        conf.trainer_stats_configs.codecarbon.output_dir,
+        file_prefix=fp,
+    )
 
 class SimpleFileOutput(BaseOutput): 
     
@@ -149,7 +157,7 @@ class CodeCarbonStats(base.TrainerStats):
 
     """
 
-    def __init__(self, device : torch.device, run_num : int, project_name : str, output_dir : str) -> None: 
+    def __init__(self, device : torch.device, run_num : int, project_name : str, output_dir : str, file_prefix : str = "") -> None: 
         
         # Track current iteration number in the training loop
         self.iteration = 0
@@ -158,7 +166,8 @@ class CodeCarbonStats(base.TrainerStats):
         self.device = device
         # tracking the run number to distinguish between different parameter settings
         self.run_num = run_num
-        run_number = f"run_{run_num}_"
+        self._file_prefix = file_prefix
+        run_number = f"{file_prefix}run_{run_num}_"
         # GPU ranks - wrap in torch.device
         gpu_id = self.device.index
         # log the losses
@@ -272,7 +281,7 @@ class CodeCarbonStats(base.TrainerStats):
         df = pd.DataFrame([[x["task_name"], x["loss"].item()] for x in self.losses])
         
         # save to file ({output_dir}/losses/run_{run_num}_cc_loss_rank_{gpu_id}.csv)
-        run_number = f"run_{self.run_num}_"
+        run_number = f"{self._file_prefix}run_{self.run_num}_"
         gpu_id = self.device.index
         losses_dir = os.path.join(self.output_dir, "losses")
         os.makedirs(losses_dir, exist_ok=True)

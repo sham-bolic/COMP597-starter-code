@@ -1,6 +1,9 @@
 import csv
 import logging
 import os
+import time
+from pathlib import Path
+
 import pynvml
 import psutil
 import torch
@@ -25,17 +28,31 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
     if ru_config is not None:
         output_path = getattr(ru_config, "output_dir", ".")
         output_file = getattr(ru_config, "output_file", "resource_util.csv")
+    output_file = utils.apply_trainer_stats_file_prefix_to_basename(output_file, conf)
     csv_path = os.path.join(output_path, output_file)
-    return ResourceUtilStats(device=device, csv_path=csv_path)
+    duration_name = utils.apply_trainer_stats_file_prefix_to_basename(
+        utils.train_duration_basename("resource_util_train_duration"), conf
+    )
+    duration_path = Path(output_path) / duration_name
+    return ResourceUtilStats(device=device, csv_path=csv_path, duration_path=duration_path)
 
 class ResourceUtilStats(simple.SimpleTrainerStats):
+    """Per-step resource CSV plus full-loop wall time (same timing model as ``noop``).
+
+    Writes ``duration_ms`` to ``duration_path`` (``resource_util_train_duration*.txt``
+    next to the CSV; ``memory_`` / ``RUN_REPEAT_INDEX`` suffixes match noop’s rules).
+    """
+
     # Disable tqdm to avoid terminal conflicts (metrics are written to CSV)
     SUPPRESS_PROGRESS_BAR = True
 
-    def __init__(self, device, csv_path="resource_util.csv"):
+    def __init__(self, device, csv_path="resource_util.csv", duration_path=None):
         super().__init__(device)
         self.csv_path = csv_path
+        self._duration_path = Path(duration_path) if duration_path is not None else None
         self._rows = []
+        self._train_start_ns = None
+        self._train_duration_ns = None
 
         pynvml.nvmlInit()
         gpu_index = device.index if device.index is not None else 0
@@ -55,6 +72,10 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         self.total_io_write = 0
 
     def start_train(self):
+        self._train_duration_ns = None
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        self._train_start_ns = time.perf_counter_ns()
         io = self.process.io_counters()
         self.io_read_start = io.read_bytes
         self.io_write_start = io.write_bytes
@@ -95,6 +116,11 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         ])
 
     def stop_train(self):
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        if self._train_start_ns is not None:
+            self._train_duration_ns = time.perf_counter_ns() - self._train_start_ns
+        self._train_start_ns = None
         io = self.process.io_counters()
         self.total_io_read = io.read_bytes - self.io_read_start
         self.total_io_write = io.write_bytes - self.io_write_start
@@ -120,6 +146,14 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
             ])
             writer.writerows(self._rows)
         logger.info(f"Resource utilization saved to {self.csv_path}")
+        d = self._train_duration_ns
+        path = self._duration_path
+        if d is not None and path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ms = d / 1e6
+            with path.open("w", encoding="utf-8") as f:
+                f.write(f"duration_ms {ms}\n")
+            logger.info(f"Train duration saved to {path}")
 
     def log_step(self):
         # Per-step metrics are written to CSV in stop_step(); no console output

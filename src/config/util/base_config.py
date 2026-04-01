@@ -1,4 +1,6 @@
-from typing import Any, Dict, Self
+from __future__ import annotations
+
+from typing import Any, Dict
 import argparse
 import logging
 logger = logging.getLogger(__name__)
@@ -47,7 +49,7 @@ class _BaseConfig:
                 args[self._get_arg_name(attr)] = val
         return args
 
-    def _get_subconfigs(self) -> Dict[str, Self]:
+    def _get_subconfigs(self) -> Dict[str, _BaseConfig]:
         subconfigs = {}
         for attr in self.__dict__.keys():
             val = getattr(self, attr)

@@ -50,7 +50,9 @@ def whisper_init(conf: config.Config, dataset: data.Dataset) -> Tuple[trainer.Tr
         multiprocessing_context="spawn" if num_workers > 0 else None,
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
+    )
     model = model.to(device)
     optimizer = optim.AdamW(model.parameters(),  lr = conf.learning_rate)
 

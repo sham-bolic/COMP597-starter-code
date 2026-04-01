@@ -76,7 +76,7 @@ for ((i = 1; i <= COUNT; i++)); do
 	echo "[$SCRIPT_NAME] run $i / $COUNT" >&2
 	export RUN_REPEAT_INDEX="$i"
 	if [[ -n "$EXPORT_INDEX_VAR" ]]; then
-		export "${EXPORT_INDEX_VAR}=$i"
+		export "$EXPORT_INDEX_VAR"="$i"
 	fi
 	set +e
 	"$@"

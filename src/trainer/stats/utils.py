@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import logging
+import os
 import pynvml
 import time
 import torch
+import src.config as config
 
 logger = logging.getLogger(__name__)
 
@@ -255,3 +259,38 @@ class RunningEnergy:
         """
         self.stat.log_analysis()
 
+
+def trainer_stats_file_prefix(conf: config.Config) -> str:
+    """Return ``memory_`` when synthetic_whisper effective storage is ``memory``, else ``""``."""
+    from src.data.synthetic_whisper.data import effective_synthetic_whisper_data_type
+
+    sc = getattr(conf.data_configs, "synthetic_whisper", None)
+    if sc is None:
+        return ""
+    try:
+        if effective_synthetic_whisper_data_type(sc) != "memory":
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return "memory_"
+
+
+def apply_trainer_stats_file_prefix_to_basename(basename: str, conf: config.Config) -> str:
+    """Prefix ``memory_`` to a filename basename when in synthetic in-memory data mode."""
+    pfx = trainer_stats_file_prefix(conf)
+    if not pfx or not basename:
+        return basename
+    if basename.startswith(pfx):
+        return basename
+    return f"{pfx}{basename}"
+
+
+def train_duration_basename(stem: str = "baseline_train_duration") -> str:
+    """Basename for full-loop duration files (``RUN_REPEAT_INDEX`` → ``_run_<n>`` suffix).
+
+    Use stem ``baseline_train_duration`` (noop) or ``resource_util_train_duration`` (resource_util).
+    """
+    idx = os.environ.get("RUN_REPEAT_INDEX", "").strip()
+    if idx:
+        return f"{stem}_run_{idx}.txt"
+    return f"{stem}.txt"

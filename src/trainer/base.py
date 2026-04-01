@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-import src.trainer.stats as stats
+import src.trainer.stats as trainer_stats
 import torch
 import torch.nn as nn
 import torch.utils.data as data
@@ -21,9 +22,10 @@ class Trainer(ABC):
     device
         The device on which the model resides and where batches will be moved to.
     stats
-        An object to gather statistics during training. It is an optional 
-        parameter. The default `NOOPTrainerStats` will simply no-op on every 
-        call used to gather statistical data.
+        An object to gather statistics during training. If ``None``, a
+        ``NOOPTrainerStats`` instance is created for this ``device`` (writes
+        ``baseline_train_duration*.txt`` when the train loop finishes; see
+        ``src/trainer/stats/noop.py``).
     enable_checkpointing
         Whether or not to checkpoint the model.
     checkpoint_frequency
@@ -50,12 +52,17 @@ class Trainer(ABC):
                  model : nn.Module, 
                  loader : data.DataLoader, 
                  device : torch.device, 
-                 stats : stats.TrainerStats = stats.NOOPTrainerStats(), 
+                 stats : Optional[trainer_stats.TrainerStats] = None, 
                  enable_checkpointing : bool = False,
                  checkpoint_frequency : int = 1):
         self.model = model
         self.loader = loader
         self.device = device
+        if stats is None:
+            stats = trainer_stats.NOOPTrainerStats(
+                device=device,
+                output_path=Path("baseline_train_duration.txt"),
+            )
         self.stats = stats
         self.enable_checkpointing = enable_checkpointing
         self.checkpoint_frequency = checkpoint_frequency

@@ -59,9 +59,9 @@ export COMP597_SLURM_PARTITION="all"
 # The SLURM QOS to use.
 # See --qos in srun --help
 export COMP597_SLURM_QOS="comp597"
-# The maximum amount of time the job is allowed to run for. 
+# The maximum amount of time the job is allowed to run for.
 # See --time in srun --help
-export COMP597_SLURM_TIME_LIMIT="59:00"
+export COMP597_SLURM_TIME_LIMIT="4:00:00"
 
 ################################################################################
 ################################################################################

@@ -19,11 +19,16 @@
 #   --num_workers 0 \
 #   --trainer_stats codecarbon \
 #   (default output_dir: results/data/batch_<batch>_worker_<workers>)
-#   --n_samples 500 \
-#   --repeat 4 \
-#   --memory_only 1
+#   --repeat 4
+#   # default memory_only=0 (on-disk); use --memory_only 1 for RAM-only
 # (Do not pass --trainer_stats_configs.codecarbon.run_num: this script sets
 #  WHISPER_CODECARBON_RUN_NUM to 1..WHISPER_REPEAT_COUNT each run.)
+#
+# phase_timing example (writes run_*_phase_timing_*_per_step.csv and *_summary.csv):
+#
+# ./scripts/start-whisper-3x.sh \
+#   --trainer_stats phase_timing
+#   # same run_num / output_dir wiring as codecarbon (WHISPER_CODECARBON_RUN_NUM per repeat).
 #
 # resource_util example:
 #
@@ -34,13 +39,12 @@
 #   --trainer_stats resource_util \
 #   (default output_dir: results/data/batch_<batch>_worker_<workers>)
 #   --stats_output_file resource_util.csv \
-#   --n_samples 500 \
-#   --repeat 4 \
-#   --memory_only 1
+#   --repeat 4
+#   # default memory_only=0 (on-disk); use --memory_only 1 for RAM-only
 #
 # Env equivalents: WHISPER_BATCH_SIZE, WHISPER_LEARNING_RATE, WHISPER_NUM_WORKERS,
 # WHISPER_TRAINER_STATS, WHISPER_CODECARBON_RUN_NUM, WHISPER_OUTPUT_DIR,
-# WHISPER_STATS_OUTPUT_FILE, WHISPER_N_SAMPLES, WHISPER_REPEAT, WHISPER_MEMORY_ONLY.
+# WHISPER_STATS_OUTPUT_FILE, WHISPER_REPEAT, WHISPER_MEMORY_ONLY, WHISPER_DATA_TYPE, etc.
 # -------------------------------------------------------------------------------
 
 SCRIPTS_DIR=$(readlink -f -n "$(dirname "$0")")

@@ -20,6 +20,11 @@ Passing a **directory** groups ``run_*`` step/substep task CSVs, averages across
 outputs under ``results/plots/<mirrored-path>/``. ``cc_full`` files are **not** plotted in batch
 mode. ``cc_full`` is plotted only for a **single** CSV with **two or more rows**.
 
+**Per-step figures** (metrics, hardware, subphases, duration PNG) drop the first
+``CODECARBON_PLOT_WARMUP_STEPS`` training steps by sorted index and tighten the x-axis; cumulative
+series sum only over the plotted tail. Summary CSVs still use all steps unless you trim elsewhere.
+Adjust the constant in this file to change warm-up length.
+
 Y-axes use **scientific notation** (e.g. ``1.2e-04``) for **energy and emissions** only; duration
 and other quantities keep default formatting. Step-index x-axes stay plain integers.
 
@@ -144,6 +149,40 @@ def _xlim_from_zero(ax, x: pd.Series, *, pad_ratio: float = 0.02) -> None:
     ax.set_xlim(0, max(xmax * (1.0 + pad_ratio), 1.0))
 
 
+# Per-step CodeCarbon plots: drop the first N rows by sorted ``x_col`` so y-axes ignore warm-up spikes.
+CODECARBON_PLOT_WARMUP_STEPS = 10
+
+
+def _trim_codecarbon_warmup(df: pd.DataFrame, x_col: str) -> tuple[pd.DataFrame, int]:
+    if x_col not in df.columns or len(df) == 0:
+        return df, 0
+    out = df.sort_values(x_col, kind="mergesort").reset_index(drop=True)
+    n_skip = min(CODECARBON_PLOT_WARMUP_STEPS, max(0, len(out) - 1))
+    if n_skip:
+        out = out.iloc[n_skip:].reset_index(drop=True)
+    return out, n_skip
+
+
+def _append_warmup_to_caption(caption: str, n_skip: int, *, cumulative_note: bool = False) -> str:
+    if not n_skip:
+        return caption
+    extra = f" First {n_skip} step(s) by index omitted (warm-up trim)."
+    if cumulative_note:
+        extra += " Cumulative curves sum only over plotted steps."
+    return caption + extra
+
+
+def _xlim_after_warmup(ax, x: pd.Series, n_skip: int, *, pad_ratio: float = 0.02) -> None:
+    xs = pd.to_numeric(x, errors="coerce")
+    if n_skip and xs.notna().any():
+        xa = float(xs.min(skipna=True))
+        xb = float(xs.max(skipna=True))
+        span = max(xb - xa, 1.0)
+        ax.set_xlim(max(0.0, xa - pad_ratio * span), xb + pad_ratio * span)
+    else:
+        _xlim_from_zero(ax, x)
+
+
 def _ylim_from_zero(ax, y, *, pad_ratio: float = 0.06) -> None:
     vals = pd.to_numeric(pd.Series(y), errors="coerce")
     if not vals.notna().any():
@@ -227,6 +266,8 @@ def plot_steps_overview(
     if not any(c in df.columns for c in required_any):
         raise SystemExit(f"Expected at least one of {required_any}; got columns {list(df.columns)}")
 
+    df, n_warm = _trim_codecarbon_warmup(df, x_col)
+    caption = _append_warmup_to_caption(caption, n_warm, cumulative_note=True)
     x = pd.to_numeric(df[x_col], errors="coerce")
     panels: list[tuple[str, np.ndarray, str]] = []
 
@@ -286,7 +327,7 @@ def plot_steps_overview(
         ax.set_ylabel(y_label, fontsize=9)
         ax.set_title(panel_title, fontsize=10, loc="left", pad=6)
         _style_step_axes(ax)
-        _xlim_from_zero(ax, x)
+        _xlim_after_warmup(ax, x, n_warm)
         _ylim_from_zero(ax, y)
         if _yaxis_sci_for_energy_or_emissions(y_axis_label=y_label):
             _yaxis_scientific_1e(ax)
@@ -323,6 +364,8 @@ def plot_step_energy_by_hardware(
     if x_col not in df.columns:
         raise SystemExit(f"Missing x column {x_col!r}")
 
+    df, n_warm = _trim_codecarbon_warmup(df, x_col)
+    caption = _append_warmup_to_caption(caption, n_warm, cumulative_note=True)
     x = pd.to_numeric(df[x_col], errors="coerce")
     x_np = x.to_numpy()
 
@@ -348,7 +391,7 @@ def plot_step_energy_by_hardware(
     ax_step.set_ylabel("kWh / step", fontsize=9)
     ax_step.legend(loc="upper right", fontsize=9, title="Component", framealpha=0.92, ncol=min(3, len(present)))
     _style_step_axes(ax_step)
-    _xlim_from_zero(ax_step, x)
+    _xlim_after_warmup(ax_step, x, n_warm)
     _ylim_from_zero(ax_step, np.array([ymax_step]) if ymax_step > 0 else np.array([0.0]))
     _yaxis_scientific_1e(ax_step)
 
@@ -356,7 +399,7 @@ def plot_step_energy_by_hardware(
     ax_cum.set_ylabel("kWh (cumulative)", fontsize=9)
     ax_cum.legend(loc="upper left", fontsize=9, title="Component", framealpha=0.92, ncol=min(3, len(present)))
     _style_step_axes(ax_cum)
-    _xlim_from_zero(ax_cum, x)
+    _xlim_after_warmup(ax_cum, x, n_warm)
     _ylim_from_zero(ax_cum, np.array([ymax_cum]) if ymax_cum > 0 else np.array([0.0]))
     _yaxis_scientific_1e(ax_cum)
 
@@ -386,9 +429,6 @@ DURATION_PHASE_COLORS = {
     "duration_backward_s": "#fdae61",
     "duration_optimizer_s": "#7fbc41",
 }
-
-# Omit the first N rows (by sorted training step) in duration-only figures so y-limits ignore warmup spikes.
-DURATION_PLOT_SKIP_FIRST_STEPS = 10
 
 DURATION_TABLE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("Whole step", "whole_step_duration_s"),
@@ -443,6 +483,8 @@ def plot_per_step_total_and_cumulative(
     """Two panels: mean energy per step, then cumulative."""
     if x_col not in df.columns or energy_col not in df.columns:
         raise SystemExit(f"Need columns {x_col!r} and {energy_col!r}")
+    df, n_warm = _trim_codecarbon_warmup(df, x_col)
+    caption = _append_warmup_to_caption(caption, n_warm, cumulative_note=True)
     x = pd.to_numeric(df[x_col], errors="coerce")
     e = pd.to_numeric(df[energy_col], errors="coerce")
 
@@ -459,7 +501,7 @@ def plot_per_step_total_and_cumulative(
     )
     axes[0].set_ylabel("kWh (per step)", fontsize=9)
     _style_step_axes(axes[0])
-    _xlim_from_zero(axes[0], x)
+    _xlim_after_warmup(axes[0], x, n_warm)
     _ylim_from_zero(axes[0], y1)
     _yaxis_scientific_1e(axes[0])
 
@@ -468,7 +510,7 @@ def plot_per_step_total_and_cumulative(
     axes[1].set_title("Cumulative electrical energy", fontsize=10, loc="left", pad=6)
     axes[1].set_ylabel("kWh (cumulative)", fontsize=9)
     _style_step_axes(axes[1])
-    _xlim_from_zero(axes[1], x)
+    _xlim_after_warmup(axes[1], x, n_warm)
     _ylim_from_zero(axes[1], y2)
     _yaxis_scientific_1e(axes[1])
 
@@ -500,14 +542,10 @@ def plot_step_substep_durations(
     if not ordered:
         raise SystemExit("No duration_forward_s / duration_backward_s / duration_optimizer_s columns")
 
-    work_s = merged.sort_values(x_col, kind="mergesort").reset_index(drop=True)
-    n_skip = min(DURATION_PLOT_SKIP_FIRST_STEPS, max(0, len(work_s) - 1))
-    if n_skip:
-        work_s = work_s.iloc[n_skip:].reset_index(drop=True)
-    cap = caption
-    if n_skip:
-        cap += f" First {n_skip} step(s) omitted from this plot for clearer scaling."
-    cap += " Y-axis and table: milliseconds (source CSVs use seconds)."
+    work_s, n_skip = _trim_codecarbon_warmup(merged, x_col)
+    cap = _append_warmup_to_caption(caption, n_skip, cumulative_note=False) + (
+        " Y-axis and table: milliseconds (source CSVs use seconds)."
+    )
 
     work = durations_seconds_to_ms_frame(work_s)
     step = pd.to_numeric(work[x_col], errors="coerce")
@@ -655,6 +693,8 @@ def plot_substeps_stacked_energy(
     out_path: Path,
 ) -> None:
     """Stacked bars: mean kWh in forward vs backward vs optimizer within each step."""
+    df_wide, n_warm = _trim_codecarbon_warmup(df_wide, "step")
+    caption = _append_warmup_to_caption(caption, n_warm, cumulative_note=False)
     step = df_wide["step"].to_numpy()
     ordered: list[tuple[str, str]] = []
     for col, human in PHASE_LABELS_ORDER:
@@ -686,7 +726,7 @@ def plot_substeps_stacked_energy(
     ax.set_axisbelow(True)
     ax.xaxis.set_major_locator(MaxNLocator(nbins=10, integer=True))
     xs = pd.Series(step)
-    _xlim_from_zero(ax, xs)
+    _xlim_after_warmup(ax, xs, n_warm)
     _ylim_from_zero(ax, bottoms if bottoms.size else np.array([0.0]))
     _yaxis_scientific_1e(ax)
 
@@ -704,6 +744,8 @@ def plot_substeps_phases_separate(
     out_path: Path,
 ) -> None:
     """One figure: forward / backward / optimizer each in its own column (per-step + cumulative)."""
+    df_wide, n_warm = _trim_codecarbon_warmup(df_wide, "step")
+    caption = _append_warmup_to_caption(caption, n_warm, cumulative_note=True)
     step = df_wide["step"].to_numpy()
     xs = pd.Series(step)
     ordered: list[tuple[str, str]] = []
@@ -745,7 +787,7 @@ def plot_substeps_phases_separate(
         axt.set_title(f"{human}\nkWh per training step", fontsize=10)
         axt.set_ylabel("kWh / step", fontsize=9)
         _style_step_axes(axt)
-        _xlim_from_zero(axt, xs)
+        _xlim_after_warmup(axt, xs, n_warm)
         _ylim_from_zero(axt, y)
         _yaxis_scientific_1e(axt)
 
@@ -753,7 +795,7 @@ def plot_substeps_phases_separate(
         axb.set_title(f"{human}\ncumulative kWh", fontsize=10)
         axb.set_ylabel("kWh (sum)", fontsize=9)
         _style_step_axes(axb)
-        _xlim_from_zero(axb, xs)
+        _xlim_after_warmup(axb, xs, n_warm)
         _ylim_from_zero(axb, yc)
         _yaxis_scientific_1e(axb)
 
@@ -830,8 +872,10 @@ def _infer_kind(path: Path) -> str:
         return "steps"
     if name.endswith("-substeps.csv"):
         return "substeps"
-    # With ``run_<n>_`` prefix: ``..._cc_full_...``; after stripping prefix: ``cc_full_...``
+    # With ``run_<n>_`` prefix: ``..._cc_full_...``; E2E baseline uses ``..._cc_e2e_full_...``
     if "_cc_full_" in name or name.startswith("cc_full_"):
+        return "full"
+    if "_cc_e2e_full_" in name or name.startswith("cc_e2e_full_"):
         return "full"
     if "_cc_step_" in name or name.startswith("cc_step_"):
         return "steps"  # user may pass base file; prefer sibling -steps
@@ -977,7 +1021,7 @@ def plot_one_file(path: Path, plots_root: Path, output: Path | None) -> None:
     else:
         raise SystemExit(
             f"Unrecognised CodeCarbon CSV type: {path.name!r} "
-            "(expected *cc_full*, *cc_step* / *-steps*, *cc_substep* / *-substeps*)"
+            "(expected *cc_full*, *cc_e2e_full*, *cc_step* / *-steps*, *cc_substep* / *-substeps*)"
         )
 
     if summary_rows:
@@ -1125,12 +1169,16 @@ def write_merged_duration_if_paired(
     write_duration_table_files(out_dir, merged, stem_prefix=stem_prefix)
     plot_path = out_dir / f"{stem_prefix}codecarbon_duration.png"
     pfx = stem_prefix.rstrip("_") or "duration"
+    cap = (
+        "Whole-step CodeCarbon task vs subphase durations (plotted in ms; CSVs in s)."
+        if duration_plot_caption is None
+        else duration_plot_caption
+    )
     plot_step_substep_durations(
         merged,
         main_title=duration_plot_title
         or f"CodeCarbon — step vs subphase duration (wall time, ms)\n{pfx}",
-        caption=duration_plot_caption
-        or "Whole-step CodeCarbon task vs subphase durations (plotted in ms; CSVs in s).",
+        caption=cap,
         out_path=plot_path,
     )
 
@@ -1248,7 +1296,12 @@ def build_full_run_rows_from_dataframe(
 
 def collect_full_run_table_rows(directory: Path) -> list[dict[str, str | int | float]]:
     rows: list[dict[str, str | int | float]] = []
-    for p in sorted(directory.glob("*_cc_full_*.csv")):
+    full_paths = sorted(
+        {p.resolve() for p in directory.glob("*_cc_full_*.csv")}
+        | {p.resolve() for p in directory.glob("*_cc_e2e_full_*.csv")},
+        key=lambda p: p.name,
+    )
+    for p in full_paths:
         df = pd.read_csv(p)
         m = RUN_PREFIX_RE.match(p.name)
         run_idx = int(m.group(1)) if m else None
@@ -1328,21 +1381,20 @@ def plot_directory_averaged(directory: Path, plots_root: Path) -> None:
         kind = _infer_kind(Path(template_key))
         base_stem = Path(template_key).stem
         n_runs = len(paths)
-        mean_caption = f"Averaged: each point uses the mean over {n_runs} runs at that step index."
 
         if kind == "steps":
             df = average_steps_group(paths)
             plot_steps_overview(
                 df,
                 main_title=f"CodeCarbon — metrics per training step (mean of {n_runs} runs)\n{base_stem}",
-                caption=mean_caption,
+                caption="",
                 out_path=out_dir / f"{base_stem}_mean_codecarbon_metrics.png",
                 x_col="step",
             )
             plot_step_energy_by_hardware(
                 df,
                 main_title=f"CodeCarbon — energy by hardware (mean of {n_runs} runs)\n{base_stem}",
-                caption=mean_caption + " Stacked kWh = CPU + GPU + RAM per step.",
+                caption="Stacked kWh = CPU + GPU + RAM per step.",
                 out_path=out_dir / f"{base_stem}_mean_codecarbon_hardware_energy.png",
                 x_col="step",
             )
@@ -1360,20 +1412,20 @@ def plot_directory_averaged(directory: Path, plots_root: Path) -> None:
             plot_substeps_stacked_energy(
                 wide,
                 main_title=f"CodeCarbon — electricity by phase (mean of {n_runs} runs)\n{base_stem}",
-                caption=mean_caption + " Stacked layers = forward / backward / optimizer.",
+                caption="Stacked layers = forward / backward / optimizer.",
                 out_path=stack_out,
             )
             plot_substeps_phases_separate(
                 wide,
                 main_title=f"CodeCarbon — electricity by training substep (mean of {n_runs} runs)\n{base_stem}",
-                caption=mean_caption + " One column per phase; easier to compare shape without stacking.",
+                caption="One column per phase; easier to compare shape without stacking.",
                 out_path=stack_out.with_name(stack_out.stem + "_isolated.png"),
             )
             line_out = out_dir / f"{base_stem}_mean_codecarbon_total_energy.png"
             plot_per_step_total_and_cumulative(
                 wide.rename(columns={"energy_total": "energy_consumed"}),
                 main_title=f"CodeCarbon — total energy per step (mean of {n_runs} runs)\n{base_stem}",
-                caption=mean_caption,
+                caption="",
                 energy_col="energy_consumed",
                 out_path=line_out,
                 x_col="step",
@@ -1400,10 +1452,6 @@ def plot_directory_averaged(directory: Path, plots_root: Path) -> None:
         df_steps_mean = average_steps_group(step_paths)
         stem_prefix = f"{Path(template_key).stem}_"
         n_pair = len(step_paths)
-        cap = (
-            f"Mean over {n_pair} runs at each step index. "
-            "Duration figure in ms, CSV tables in seconds (whole step vs subphases)."
-        )
         write_merged_duration_if_paired(
             out_dir,
             df_steps_mean,
@@ -1413,7 +1461,7 @@ def plot_directory_averaged(directory: Path, plots_root: Path) -> None:
                 f"CodeCarbon — step vs subphase duration (mean of {n_pair} runs)\n"
                 f"{Path(template_key).stem}"
             ),
-            duration_plot_caption=cap,
+            duration_plot_caption="",
         )
 
     write_codecarbon_summary_table(out_dir / "codecarbon_summary_table.csv", summary_rows)
