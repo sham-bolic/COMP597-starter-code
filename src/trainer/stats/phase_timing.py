@@ -8,8 +8,12 @@
   measure one phase at a time without extra sync boundaries.
 
 Writes two CSVs per run under ``output_dir``; all durations are in **milliseconds**
-(column names ``*_ms``). When ``measure_phase`` is not ``all``, filenames include
-``phase_timing_measure_<phase>_`` so separate runs do not overwrite each other.
+(column names ``*_ms``). Each step also records **resource** columns (after CUDA
+sync when on GPU): ``gpu_util`` (NVML %), ``cuda_mem_allocated_gb`` and
+``cuda_mem_reserved_gb`` (``torch.cuda``; decimal GB), and ``cpu_util`` (% for this process, same
+as ``resource_util``). When
+``measure_phase`` is not ``all``, filenames include ``phase_timing_measure_<phase>_``
+so separate runs do not overwrite each other.
 
 Forward timing includes anything inside ``Trainer.forward`` (e.g.
 ``optimizer.zero_grad()`` for ``SimpleTrainer``).
@@ -25,6 +29,8 @@ import time
 from typing import Any
 
 import numpy as np
+import pynvml
+import psutil
 import torch
 
 import src.config as config
@@ -37,6 +43,14 @@ logger = logging.getLogger(__name__)
 trainer_stats_name = "phase_timing"
 
 _MEASURE_PHASE_CHOICES = frozenset({"all", "step", "forward", "backward", "optimizer"})
+
+_SUMMARY_TIMING_COLS = ("step_ms", "forward_ms", "backward_ms", "optimizer_ms")
+_SUMMARY_RESOURCE_COLS = (
+    "gpu_util",
+    "cuda_mem_allocated_gb",
+    "cuda_mem_reserved_gb",
+    "cpu_util",
+)
 
 
 def _sync_device(device: torch.device) -> None:
@@ -99,6 +113,23 @@ class PhaseTimingStats(base.TrainerStats):
         self._train_start_ns: int | None = None
         self._train_duration_ns: int | None = None
 
+        self._process = psutil.Process()
+        self._gpu_handle = None
+        if self.device.type == "cuda" and torch.cuda.is_available():
+            try:
+                pynvml.nvmlInit()
+                gpu_index = (
+                    self.device.index
+                    if self.device.index is not None
+                    else torch.cuda.current_device()
+                )
+                self._gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(int(gpu_index))
+            except Exception as e:
+                logger.warning(
+                    "phase_timing: NVML not available (%s); gpu_util will be NaN",
+                    e,
+                )
+
         gid = self.device.index
         rank_label = "cpu" if gid is None else str(gid)
         self._run_token = f"{file_prefix}run_{run_num}_"
@@ -124,6 +155,32 @@ class PhaseTimingStats(base.TrainerStats):
         if stats.get_last() < 0:
             return float("nan")
         return stats.get_last() / 1.0e6
+
+    def _sample_resources(self) -> dict[str, float]:
+        """GPU util (NVML) / CUDA allocator memory / CPU util at end of step."""
+        gpu_u = float("nan")
+        cuda_alloc_gb = float("nan")
+        cuda_reserved_gb = float("nan")
+        if self.device.type == "cuda" and torch.cuda.is_available():
+            _sync_device(self.device)
+            try:
+                cuda_alloc_gb = torch.cuda.memory_allocated(self.device) / 1e9
+                cuda_reserved_gb = torch.cuda.memory_reserved(self.device) / 1e9
+            except Exception as e:
+                logger.debug("phase_timing: CUDA memory query failed: %s", e)
+            if self._gpu_handle is not None:
+                try:
+                    util = pynvml.nvmlDeviceGetUtilizationRates(self._gpu_handle)
+                    gpu_u = float(util.gpu)
+                except Exception as e:
+                    logger.debug("phase_timing: NVML sample failed: %s", e)
+        cpu_u = float(self._process.cpu_percent())
+        return {
+            "gpu_util": gpu_u,
+            "cuda_mem_allocated_gb": cuda_alloc_gb,
+            "cuda_mem_reserved_gb": cuda_reserved_gb,
+            "cpu_util": cpu_u,
+        }
 
     def start_train(self) -> None:
         self._train_duration_ns = None
@@ -153,6 +210,7 @@ class PhaseTimingStats(base.TrainerStats):
             "backward_ms": self._ns_to_ms_or_nan(self.backward_stats),
             "optimizer_ms": self._ns_to_ms_or_nan(self.optimizer_step_stats),
         }
+        row.update(self._sample_resources())
         self._per_step_rows.append(row)
 
     def start_forward(self) -> None:
@@ -204,7 +262,7 @@ class PhaseTimingStats(base.TrainerStats):
         pass
 
     def _build_summary(self) -> dict[str, Any]:
-        cols = ("step_ms", "forward_ms", "backward_ms", "optimizer_ms")
+        cols = _SUMMARY_TIMING_COLS + _SUMMARY_RESOURCE_COLS
         n = len(self._per_step_rows)
         warm = min(self.warmup_steps, n)
         body = self._per_step_rows[warm:]
@@ -260,6 +318,10 @@ class PhaseTimingStats(base.TrainerStats):
             "forward_ms",
             "backward_ms",
             "optimizer_ms",
+            "gpu_util",
+            "cuda_mem_allocated_gb",
+            "cuda_mem_reserved_gb",
+            "cpu_util",
         ]
         with open(self._per_step_path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -304,5 +366,37 @@ class PhaseTimingStats(base.TrainerStats):
                 f"step mean_ms={s.get('mean_step_ms', float('nan')):.6g} "
                 f"std_ms={s.get('std_step_ms', float('nan')):.6g}"
             )
+        parts.append(
+            f"gpu_util mean={s.get('mean_gpu_util', float('nan')):.4g}% "
+            f"cuda_mem_alloc mean={s.get('mean_cuda_mem_allocated_gb', float('nan')):.4g} GB "
+            f"cuda_mem_resv mean={s.get('mean_cuda_mem_reserved_gb', float('nan')):.4g} GB "
+            f"cpu_util mean={s.get('mean_cpu_util', float('nan')):.4g}%"
+        )
         parts.append(f"(warmup_steps={s.get('warmup_steps')}, n_steps={s.get('n_steps_summarized')})")
         print("Phase timing (summarized, ms): " + " | ".join(parts))
+
+        n = len(self._per_step_rows)
+        warm = min(self.warmup_steps, n)
+        body = self._per_step_rows[warm:]
+        cols = _SUMMARY_TIMING_COLS + _SUMMARY_RESOURCE_COLS
+        cov: list[str] = []
+        if body:
+            total = len(body)
+            for c in cols:
+                nf = sum(1 for r in body if math.isfinite(float(r[c])))
+                if c in _SUMMARY_TIMING_COLS:
+                    # All-NaN is normal for unmeasured phases when measure_phase is not "all".
+                    incomplete = 0 < nf < total
+                elif c in ("gpu_util", "cuda_mem_allocated_gb", "cuda_mem_reserved_gb"):
+                    incomplete = (
+                        self.device.type == "cuda"
+                        and torch.cuda.is_available()
+                        and nf < total
+                    )
+                else:
+                    # cpu_util: expect a value every step; any mix of NaN is suspicious.
+                    incomplete = 0 < nf < total
+                if incomplete:
+                    cov.append(f"{c}: {nf}/{total} finite steps (excluded NaN from mean/std)")
+        if cov:
+            print("phase_timing: incomplete metrics — " + "; ".join(cov))

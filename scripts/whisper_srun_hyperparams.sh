@@ -24,7 +24,7 @@ Optional hyperparameters (also settable via WHISPER_* environment variables):
   --batch_size N
        (training mini-batch size; default 4. Synthetic pool size is num_unique_samples, not batch_size.)
   --num_unique_samples N
-       (synonym: --data_configs.synthetic_whisper.num_unique_samples; default 16000)
+       (synonym: --data_configs.synthetic_whisper.num_unique_samples; default 7680)
   --learning_rate X   (optional; default 1e-6)
   --num_workers N
        (synonym: --data_configs.synthetic_whisper.num_workers N)
@@ -32,9 +32,9 @@ Optional hyperparameters (also settable via WHISPER_* environment variables):
        (synonym: --data_configs.synthetic_whisper.repeat N; virtual length = num_unique_samples × repeat)
   --memory_only 0|1
        (synonym: --data_configs.synthetic_whisper.memory_only; 1 = RAM-only pool of size --batch_size, not num_unique_samples)
-  --data_type NAME   chunks | shard | memmap | memory
+  --data_type NAME   chunks | shard | memmap | single_file | memory
        (synonym: --data_configs.synthetic_whisper.data_type; default chunks when memory_only=0)
-  --chunk_size N    (synthetic_whisper chunks mode only; default 400)
+  --chunk_size N    (synthetic_whisper chunks mode only; default 200)
   --num_shards N    (synthetic_whisper shard mode only; default 4)
   --force_regenerate 0|1
        (synonym: --data_configs.synthetic_whisper.force_regenerate; 1 = overwrite on-disk cache)
@@ -59,12 +59,12 @@ Any further arguments are forwarded unchanged to the Slurm driver script and the
 
 Environment defaults (used when a flag is not passed):
   WHISPER_BATCH_SIZE          (training batch; default 4)
-  WHISPER_NUM_UNIQUE_SAMPLES  (synthetic pool size; default 16000)
+  WHISPER_NUM_UNIQUE_SAMPLES  (synthetic pool size; default 7680)
   WHISPER_LEARNING_RATE       (default 1e-6)
   WHISPER_NUM_WORKERS         (default 0)
   WHISPER_REPEAT              (dataset virtual repeat; default 1. For multi-job repeats see WHISPER_REPEAT_COUNT + start-whisper-3x.sh)
   WHISPER_MEMORY_ONLY         (default 0)
-  WHISPER_DATA_TYPE           (chunks | shard | memmap | memory; default chunks)
+  WHISPER_DATA_TYPE           (chunks | shard | memmap | single_file | memory; default chunks)
   WHISPER_CHUNK_SIZE          (default 400; chunks mode)
   WHISPER_NUM_SHARDS          (default 4; shard mode)
   WHISPER_FORCE_REGENERATE    (default 0; synthetic_whisper on-disk cache only)
@@ -89,9 +89,9 @@ whisper_apply_hyperparam_defaults() {
 	: "${WHISPER_REPEAT:=${WHISPER_DEFAULT_REPEAT:-1}}"
 	: "${WHISPER_MEMORY_ONLY:=${WHISPER_DEFAULT_MEMORY_ONLY:-0}}"
 	: "${WHISPER_DATA_TYPE:=${WHISPER_DEFAULT_DATA_TYPE:-chunks}}"
-	: "${WHISPER_CHUNK_SIZE:=${WHISPER_DEFAULT_CHUNK_SIZE:-400}}"
+	: "${WHISPER_CHUNK_SIZE:=${WHISPER_DEFAULT_CHUNK_SIZE:-200}}"
 	: "${WHISPER_NUM_SHARDS:=${WHISPER_DEFAULT_NUM_SHARDS:-4}}"
-	: "${WHISPER_NUM_UNIQUE_SAMPLES:=${WHISPER_DEFAULT_NUM_UNIQUE_SAMPLES:-16000}}"
+	: "${WHISPER_NUM_UNIQUE_SAMPLES:=${WHISPER_DEFAULT_NUM_UNIQUE_SAMPLES:-7680}}"
 	: "${WHISPER_FORCE_REGENERATE:=${WHISPER_DEFAULT_FORCE_REGENERATE:-0}}"
 	: "${WHISPER_CODECARBON_COARSE_STEP_INTERVAL:=${WHISPER_DEFAULT_CODECARBON_COARSE_STEP_INTERVAL:-10}}"
 }

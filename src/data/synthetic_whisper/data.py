@@ -10,10 +10,11 @@ from transformers import WhisperFeatureExtractor
 data_load_name = "synthetic_whisper"
 
 SAMPLE_RATE = 16000
-CHUNK_SIZE_DEFAULT = 400
-CHUNKED_FORMAT = "chunked_v1"
+CHUNK_SIZE_DEFAULT = 100
+CHUNKED_FORMAT = "chunked_v1" 
 SHARDED_FORMAT = "sharded_v1"
 MEMMAP_FORMAT = "memmap_v1"
+SINGLE_FILE_FORMAT = "single_file_v1"
 
 
 def _chunks_dir_for(data_path: str) -> str:
@@ -36,7 +37,7 @@ def effective_synthetic_whisper_data_type(sc) -> str:
     if int(getattr(sc, "memory_only", 0)) == 1:
         return "memory"
     dt = str(getattr(sc, "data_type", "chunks")).strip().lower()
-    valid = {"chunks", "shard", "memmap", "memory"}
+    valid = {"chunks", "shard", "memmap", "single_file", "memory"}
     if dt not in valid:
         raise ValueError(
             f"synthetic_whisper.data_type must be one of {sorted(valid)!r}, got {dt!r}"
@@ -159,6 +160,37 @@ def generate_sharded(n: int, data_path: str, num_labels: int, num_shards: int) -
             "num_shards": num_shards,
             "shard_sizes": shard_sizes,
             "shards_dir": os.path.abspath(shards_dir),
+        },
+        data_path,
+    )
+
+
+def generate_single_file(n: int, data_path: str, num_labels: int, chunk_size: int) -> None:
+    """One manifest ``.pt`` holding the full sample list; build in batches of ``chunk_size`` (peak RAM ≈ list length)."""
+    chunk_size = max(1, int(chunk_size))
+    parent = os.path.dirname(os.path.abspath(data_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    clear_synthetic_whisper_disk_cache(data_path, dry_run=False)
+    feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-tiny")
+    samples: list = []
+    n_chunks = (n + chunk_size - 1) // chunk_size
+    for ci, start in enumerate(range(0, n, chunk_size)):
+        end = min(start + chunk_size, n)
+        batch = [_one_sample(feature_extractor, num_labels) for _ in range(end - start)]
+        samples.extend(batch)
+        del batch
+        gc.collect()
+        print(
+            f"synthetic_whisper: single_file build {ci + 1}/{n_chunks} ({end}/{n} samples)",
+            flush=True,
+        )
+    torch.save(
+        {
+            "format": SINGLE_FILE_FORMAT,
+            "n": n,
+            "num_labels": num_labels,
+            "samples": samples,
         },
         data_path,
     )
@@ -375,6 +407,8 @@ def _load_existing_disk(data_path: str, repeat: int):
             (h, w),
             repeat=repeat,
         )
+    if fmt == SINGLE_FILE_FORMAT:
+        return SyntheticWhisperData(obj["samples"], repeat=repeat)
     raise ValueError(
         f"Unknown synthetic_whisper manifest format {fmt!r} at {data_path!r}"
     )
@@ -386,7 +420,7 @@ def load_data(conf: config.Config):
     num_labels = getattr(sc, "num_labels", 10)
     force_regenerate = getattr(sc, "force_regenerate", 0)
     repeat = getattr(sc, "repeat", 1)
-    n_unique = max(1, int(getattr(sc, "num_unique_samples", 16000)))
+    n_unique = max(1, int(getattr(sc, "num_unique_samples", 7680)))
 
     data_type = effective_synthetic_whisper_data_type(sc)
     chunk_size_cfg = max(1, int(getattr(sc, "chunk_size", CHUNK_SIZE_DEFAULT)))
@@ -431,6 +465,8 @@ def load_data(conf: config.Config):
         generate_sharded(n_unique, data_path, num_labels, num_shards_cfg)
     elif data_type == "memmap":
         generate_memmap(n_unique, data_path, num_labels)
+    elif data_type == "single_file":
+        generate_single_file(n_unique, data_path, num_labels, chunk_size_cfg)
     else:
         raise ValueError(f"Unhandled data_type for disk: {data_type!r}")
 

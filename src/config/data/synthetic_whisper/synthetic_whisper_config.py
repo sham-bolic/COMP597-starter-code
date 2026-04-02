@@ -2,7 +2,7 @@ from src.config.util.base_config import _Arg, _BaseConfig
 
 config_name = "synthetic_whisper"
 
-_DATA_TYPE_CHOICES = ("chunks", "shard", "memmap", "memory")
+_DATA_TYPE_CHOICES = ("chunks", "shard", "memmap", "single_file", "memory")
 
 
 class DataConfig(_BaseConfig):
@@ -13,7 +13,7 @@ class DataConfig(_BaseConfig):
         self._arg_num_unique_samples = _Arg(
             type=int,
             help="Unique synthetic examples for on-disk backends. Ignored when memory_only=1 (pool size is --batch_size).",
-            default=16000,
+            default=7680,
         )
         self._arg_num_labels = _Arg(type=int, help="Number of classes for audio classification.", default=10)
         self._arg_force_regenerate = _Arg(type=int, help="If 1, regenerate data even if file exists (overwrites cache).", default=0)
@@ -25,13 +25,13 @@ class DataConfig(_BaseConfig):
         self._arg_data_type = _Arg(
             type=str,
             choices=_DATA_TYPE_CHOICES,
-            help="Storage backend: chunks (chunked .pt), shard, memmap, memory.",
+            help="Storage backend: chunks (chunked .pt), shard, memmap, single_file (one .pt), memory.",
             default="chunks",
         )
         self._arg_chunk_size = _Arg(
             type=int,
-            help="Samples per chunk file when data_type=chunks (default 400). Ignored for shard/memmap/memory.",
-            default=400,
+            help="Samples per chunk file when data_type=chunks; batch size when building data_type=single_file (default 200). Ignored for shard/memmap/memory.",
+            default=200,
         )
         self._arg_num_shards = _Arg(
             type=int,
