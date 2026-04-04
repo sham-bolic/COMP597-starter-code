@@ -40,21 +40,20 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
 class ResourceUtilStats(simple.SimpleTrainerStats):
     """Per-step resource CSV plus full-loop wall time (same timing model as ``noop``).
 
-    ``io_read_logical_gb`` / ``io_write_logical_gb`` are **cumulative logical bytes** during the
-    training loop (``rchar``/``wchar`` from ``/proc/pid/io``), covering this process plus all
-    descendants (e.g. ``DataLoader`` workers).  Using logical bytes means cache-hit reads from
-    ``torch.load()``-based backends (``chunks``, ``shard``) are counted even when the OS page
-    cache serves them.
+    Tracks **two pairs** of cumulative I/O counters from ``/proc/pid/io`` (via ``psutil``
+    ``io_counters``), covering the trainer process plus all descendants (``DataLoader`` workers):
 
-    **Important limitation**: ``memmap``-based reads go through the virtual-memory page-fault
-    path and are *not* counted by any ``/proc/pid/io`` field (neither physical nor logical).
-    The ``memmap`` data_type will still show near-zero I/O here.
+    * ``io_read_logical_gb`` / ``io_write_logical_gb`` — ``rchar`` / ``wchar``: every byte
+      returned by ``read()`` / ``write()`` syscalls, **including page-cache hits**.
+    * ``io_read_gb`` / ``io_write_gb`` — ``read_bytes`` / ``write_bytes``: bytes actually
+      fetched from / written to the **block device**; page-cache hits are **not** counted.
+
+    Comparing the two reveals how much data is served from cache vs disk.
 
     Writes ``duration_ms`` to ``duration_path`` (``resource_util_train_duration*.txt``
-    next to the CSV; ``memory_`` / ``RUN_REPEAT_INDEX`` suffixes match noop’s rules).
+    next to the CSV; ``memory_`` / ``RUN_REPEAT_INDEX`` suffixes match noop's rules).
     """
 
-    # Disable tqdm to avoid terminal conflicts (metrics are written to CSV)
     SUPPRESS_PROGRESS_BAR = True
 
     def __init__(self, device, csv_path="resource_util.csv", duration_path=None):
@@ -80,17 +79,21 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
 
         self.process = psutil.Process()
 
-        self.gpu_util_stats = utils.RunningStat()       # GPU utilization %
-        self.cpu_util_stats = utils.RunningStat()        # CPU utilization % (this process)
-        self.cpu_mem_stats = utils.RunningStat()        # Process RAM (RSS)
-        self.ram_usage_stats = utils.RunningStat()      # System RAM used (whole machine)
+        self.gpu_util_stats = utils.RunningStat()
+        self.cpu_util_stats = utils.RunningStat()
+        self.cpu_mem_stats = utils.RunningStat()
+        self.ram_usage_stats = utils.RunningStat()
 
-        # Process-group I/O (main + DataLoader workers): deltas so totals stay valid when workers exit.
-        self._io_pid_last: dict[int, tuple[int, int]] = {}
-        self._io_read_cumulative = 0
-        self._io_write_cumulative = 0
-        self.total_io_read = 0
-        self.total_io_write = 0
+        # Per-pid last-seen counters: (read_chars, write_chars, read_bytes, write_bytes)
+        self._io_pid_last: dict[int, tuple[int, int, int, int]] = {}
+        self._io_logical_read_cumulative = 0
+        self._io_logical_write_cumulative = 0
+        self._io_disk_read_cumulative = 0
+        self._io_disk_write_cumulative = 0
+        self.total_io_logical_read = 0
+        self.total_io_logical_write = 0
+        self.total_io_disk_read = 0
+        self.total_io_disk_write = 0
 
     def _process_tree_proc_list(self) -> list[psutil.Process]:
         """Trainer process and all recursive children (``DataLoader`` workers), deduped by pid."""
@@ -104,18 +107,13 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         return out
 
     @staticmethod
-    def _io_read_field(io) -> int:
-        """Return logical bytes read (rchar): read()/pread() bytes regardless of page-cache hits.
-
-        Falls back to ``read_bytes`` (physical disk reads only) when ``read_chars`` is unavailable
-        (non-Linux platforms).  ``mmap``-based reads (e.g. memmap datasets) are not counted by
-        either field — they go through the VM page-fault path and never appear in /proc/pid/io.
-        """
-        return getattr(io, "read_chars", io.read_bytes)
-
-    @staticmethod
-    def _io_write_field(io) -> int:
-        return getattr(io, "write_chars", io.write_bytes)
+    def _extract_io_fields(io) -> tuple[int, int, int, int]:
+        """Return (read_chars, write_chars, read_bytes, write_bytes) from io_counters."""
+        rc = int(getattr(io, "read_chars", 0))
+        wc = int(getattr(io, "write_chars", 0))
+        rb = int(getattr(io, "read_bytes", 0))
+        wb = int(getattr(io, "write_bytes", 0))
+        return rc, wc, rb, wb
 
     def _prime_io_tree_baselines(self) -> None:
         """Snapshot ``io_counters`` for processes alive at train start (no bytes added to totals)."""
@@ -123,44 +121,44 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         for p in self._process_tree_proc_list():
             try:
                 io = p.io_counters()
-                self._io_pid_last[p.pid] = (self._io_read_field(io), self._io_write_field(io))
+                self._io_pid_last[p.pid] = self._extract_io_fields(io)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
                 logger.debug("resource_util: prime skip pid %s: %s", getattr(p, "pid", "?"), e)
 
-    def _advance_tree_io_counters(self) -> tuple[float, float]:
-        """Accumulate read/write byte deltas for the process tree; return cumulative GB totals."""
+    def _advance_tree_io_counters(self) -> tuple[float, float, float, float]:
+        """Accumulate deltas for the process tree; return cumulative GB totals.
+
+        Returns (logical_read_gb, logical_write_gb, disk_read_gb, disk_write_gb).
+        """
         for p in self._process_tree_proc_list():
             try:
                 io = p.io_counters()
                 pid = p.pid
-                r = self._io_read_field(io)
-                w = self._io_write_field(io)
+                rc, wc, rb, wb = self._extract_io_fields(io)
                 if pid in self._io_pid_last:
-                    pr, pw = self._io_pid_last[pid]
-                    dr = r - pr
-                    dw = w - pw
-                    if dr < 0 or dw < 0:
-                        logger.debug(
-                            "resource_util: non-monotonic io_counters for pid %s (dr=%s dw=%s); clamping to 0",
-                            pid,
-                            dr,
-                            dw,
-                        )
-                        dr = max(0, dr)
-                        dw = max(0, dw)
-                    self._io_read_cumulative += dr
-                    self._io_write_cumulative += dw
+                    prc, pwc, prb, pwb = self._io_pid_last[pid]
+                    d_rc = max(0, rc - prc)
+                    d_wc = max(0, wc - pwc)
+                    d_rb = max(0, rb - prb)
+                    d_wb = max(0, wb - pwb)
+                    self._io_logical_read_cumulative += d_rc
+                    self._io_logical_write_cumulative += d_wc
+                    self._io_disk_read_cumulative += d_rb
+                    self._io_disk_write_cumulative += d_wb
                 else:
-                    # Descendant that appears after train start (e.g. DataLoader worker): counters start at 0.
-                    self._io_read_cumulative += r
-                    self._io_write_cumulative += w
-                self._io_pid_last[pid] = (r, w)
+                    self._io_logical_read_cumulative += rc
+                    self._io_logical_write_cumulative += wc
+                    self._io_disk_read_cumulative += rb
+                    self._io_disk_write_cumulative += wb
+                self._io_pid_last[pid] = (rc, wc, rb, wb)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
                 logger.debug("resource_util: skip pid %s io_counters: %s", getattr(p, "pid", "?"), e)
                 continue
         return (
-            self._io_read_cumulative / 1e9,
-            self._io_write_cumulative / 1e9,
+            self._io_logical_read_cumulative / 1e9,
+            self._io_logical_write_cumulative / 1e9,
+            self._io_disk_read_cumulative / 1e9,
+            self._io_disk_write_cumulative / 1e9,
         )
 
     def start_train(self):
@@ -168,8 +166,10 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         self._train_start_ns = time.perf_counter_ns()
-        self._io_read_cumulative = 0
-        self._io_write_cumulative = 0
+        self._io_logical_read_cumulative = 0
+        self._io_logical_write_cumulative = 0
+        self._io_disk_read_cumulative = 0
+        self._io_disk_write_cumulative = 0
         self._prime_io_tree_baselines()
         output_dir = os.path.dirname(self.csv_path)
         if output_dir:
@@ -197,7 +197,7 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
         self.cpu_mem_stats.update(self.process.memory_info().rss)
         self.ram_usage_stats.update(psutil.virtual_memory().used)
 
-        io_read, io_write = self._advance_tree_io_counters()
+        lr, lw, dr, dw = self._advance_tree_io_counters()
 
         self._rows.append([
             step_num,
@@ -207,8 +207,10 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
             cuda_reserved_gb,
             self.cpu_mem_stats.get_last() / 1e9,
             self.ram_usage_stats.get_last() / 1e9,
-            io_read,
-            io_write,
+            lr,
+            lw,
+            dr,
+            dw,
         ])
 
     def stop_train(self):
@@ -218,8 +220,10 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
             self._train_duration_ns = time.perf_counter_ns() - self._train_start_ns
         self._train_start_ns = None
         self._advance_tree_io_counters()
-        self.total_io_read = self._io_read_cumulative
-        self.total_io_write = self._io_write_cumulative
+        self.total_io_logical_read = self._io_logical_read_cumulative
+        self.total_io_logical_write = self._io_logical_write_cumulative
+        self.total_io_disk_read = self._io_disk_read_cumulative
+        self.total_io_disk_write = self._io_disk_write_cumulative
 
     def log_stats(self):
         if self._rows:
@@ -255,10 +259,10 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
             if cov:
                 msg = "; ".join(f"{n}: {nf}/{nt} finite steps (excluded NaN from mean)" for n, nf, nt in cov)
                 print(f"resource_util: incomplete metrics — {msg}")
-        print("###############   I/O TOTALS (logical read_chars / write_chars)   ###############")
-        print(f"Total I/O Read: {self.total_io_read / 1e9:.2f} GB")
-        print(f"Total I/O Write: {self.total_io_write / 1e9:.2f} GB")
-        print("Note: mmap-based reads (memmap data_type) are not captured here (VM page-fault path).")
+        print("###############   I/O TOTALS   ###############")
+        print(f"Logical  (read_chars/write_chars): Read {self.total_io_logical_read / 1e9:.2f} GB  Write {self.total_io_logical_write / 1e9:.2f} GB")
+        print(f"Disk     (read_bytes/write_bytes): Read {self.total_io_disk_read / 1e9:.2f} GB  Write {self.total_io_disk_write / 1e9:.2f} GB")
+        print("Logical includes page-cache hits; Disk counts only block-device traffic.")
         with open(self.csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -271,6 +275,8 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
                 "ram_gb",
                 "io_read_logical_gb",
                 "io_write_logical_gb",
+                "io_read_gb",
+                "io_write_gb",
             ])
             writer.writerows(self._rows)
         logger.info(f"Resource utilization saved to {self.csv_path}")
@@ -284,6 +290,4 @@ class ResourceUtilStats(simple.SimpleTrainerStats):
             logger.info(f"Train duration saved to {path}")
 
     def log_step(self):
-        # Per-step metrics are written to CSV in stop_step(); no console output
-        # to avoid interfering with tqdm progress bar.
         pass

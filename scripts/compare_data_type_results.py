@@ -26,8 +26,18 @@ Outputs (when corresponding inputs exist):
 - ``compare_phase_timing_run_1.png`` — grouped bars by backend × phase (ms)
 - ``compare_phase_timing_total_run_1.png`` — sum of available phase means per backend
 - ``compare_train_duration_run_1.png`` — wall time from resource_util duration txt
+- ``compare_train_duration_overhead_run_1.png`` — instrumented overhead % vs noop (from in-cell ``baseline_*`` files)
 - ``compare_codecarbon_coarse_run_1.png`` — duration / energy / emissions (full coarse)
+- ``compare_codecarbon_full_run_1.png`` — duration / energy / emissions (``cc_full_rank``, per-step CodeCarbon aggregation)
 - ``compare_codecarbon_e2e_energy_run_1.png`` — e2e ``energy_consumed`` (+ emissions)
+
+With ``--noop-parent DIR`` (same ``data_*`` layout as ``--scan-parent``), also writes
+ratio-vs-noop figures (noop run = 1.0 reference line):
+
+- ``compare_train_duration_run_1_ratio_noop.png``
+- ``compare_codecarbon_coarse_run_1_ratio_noop.png`` (per-metric ratios when noop has values)
+- ``compare_codecarbon_full_run_1_ratio_noop.png``
+- ``compare_codecarbon_e2e_energy_run_1_ratio_noop.png``
 
 By default, all figures use **ratios vs the ``memory`` backend** (that bar/line = 1).
 Use ``--normalize-to ''`` for raw units. ``--normalize-to chunks`` selects another baseline.
@@ -213,6 +223,26 @@ def _resolve_train_duration_txt(cell_dir: Path, backend_label: str) -> Path | No
     return None
 
 
+def _resolve_baseline_duration_txt(cell_dir: Path, backend_label: str) -> Path | None:
+    """Find the noop ``baseline_train_duration*.txt`` in the same cell."""
+    mem = _uses_memory_prefix(backend_label)
+    candidates: list[Path] = []
+    if mem:
+        candidates = [
+            cell_dir / f"memory_baseline_train_duration_run_{RUN_INDEX}.txt",
+            cell_dir / "memory_baseline_train_duration.txt",
+        ]
+    else:
+        candidates = [
+            cell_dir / f"baseline_train_duration_run_{RUN_INDEX}.txt",
+            cell_dir / "baseline_train_duration.txt",
+        ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
 def _parse_duration_ms(path: Path) -> float | None:
     text = path.read_text(encoding="utf-8").strip()
     # "duration_ms 123.45"
@@ -288,6 +318,94 @@ def _collect_phase_timing_row(
         out[phase] = _mean_ms_from_row(row, phase)
 
     return out if out else None
+
+
+def _gather_backend_metrics(
+    cell: Path,
+    blabel: str,
+    extra_run_patterns: list[str],
+    *,
+    want_resource_util: bool,
+    want_phase_timing: bool,
+) -> tuple[
+    pd.DataFrame | None,
+    float | None,
+    float | None,
+    dict[str, float] | None,
+    dict[str, float] | None,
+    dict[str, float] | None,
+    dict[str, float] | None,
+]:
+    """Load trainer-stats artifacts from one batch/worker cell directory.
+
+    Returns (df_resource_util, duration_ms, baseline_duration_ms, phase_row,
+             coarse, cc_full, e2e).
+    """
+    _warn_extra_runs(cell, blabel, extra_run_patterns)
+
+    df_ru: pd.DataFrame | None = None
+    if want_resource_util:
+        ru_path = _resolve_resource_util_csv(cell, blabel)
+        if ru_path is not None:
+            df_ru = pd.read_csv(ru_path)
+
+    duration: float | None = None
+    dur_path = _resolve_train_duration_txt(cell, blabel)
+    if dur_path is not None:
+        duration = _parse_duration_ms(dur_path)
+        if duration is None:
+            warnings.warn(
+                f"[{blabel}] could not parse duration_ms from {dur_path}",
+                UserWarning,
+            )
+
+    baseline_dur: float | None = None
+    bl_path = _resolve_baseline_duration_txt(cell, blabel)
+    if bl_path is not None:
+        baseline_dur = _parse_duration_ms(bl_path)
+        if baseline_dur is None:
+            warnings.warn(
+                f"[{blabel}] could not parse duration_ms from baseline {bl_path}",
+                UserWarning,
+            )
+
+    phase_row: dict[str, float] | None = None
+    if want_phase_timing:
+        phase_row = _collect_phase_timing_row(cell, blabel)
+
+    mem = _uses_memory_prefix(blabel)
+    cc_glob = (
+        f"{RUN_TOKEN_MEM}cc_full_coarse_rank_*.csv"
+        if mem
+        else f"{RUN_TOKEN_NONMEM}cc_full_coarse_rank_*.csv"
+    )
+    cc_path = _glob_single(cell, blabel, cc_glob, "cc_full_coarse")
+    coarse: dict[str, float] | None = None
+    if cc_path is not None:
+        coarse = _codecarbon_scalars(cc_path)
+
+    # Per-step CodeCarbon full-run summary (``cc_full_rank``; not ``cc_full_coarse``).
+    full_glob = (
+        f"{RUN_TOKEN_MEM}cc_full_rank_*.csv"
+        if mem
+        else f"{RUN_TOKEN_NONMEM}cc_full_rank_*.csv"
+    )
+    full_path = _glob_single(cell, blabel, full_glob, "cc_full_rank")
+    cc_full: dict[str, float] | None = None
+    if full_path is not None:
+        cc_full = _codecarbon_scalars(full_path)
+
+    e2e_glob = (
+        f"{RUN_TOKEN_MEM}cc_e2e_full_rank_*.csv"
+        if mem
+        else f"{RUN_TOKEN_NONMEM}cc_e2e_full_rank_*.csv"
+    )
+    e2e_path = _glob_single(cell, blabel, e2e_glob, "cc_e2e_full")
+    e2e: dict[str, float] | None = None
+    if e2e_path is not None:
+        e2e = _codecarbon_scalars(e2e_path)
+
+    return df_ru, duration, baseline_dur, phase_row, coarse, cc_full, e2e
 
 
 def plot_resource_util_overlay(
@@ -521,6 +639,7 @@ def plot_simple_bars(
     *,
     title: str,
     baseline_label: str | None = None,
+    reference_line: float | None = None,
 ) -> None:
     yplot = list(values)
     ylab = ylabel
@@ -535,6 +654,15 @@ def plot_simple_bars(
     ax.bar(labels, yplot, color="#2b8cbe", alpha=0.9)
     if ratio_ok:
         ax.axhline(1.0, color="0.35", linewidth=0.9, linestyle="--", alpha=0.75, zorder=0)
+    elif reference_line is not None:
+        ax.axhline(
+            reference_line,
+            color="0.35",
+            linewidth=0.9,
+            linestyle="--",
+            alpha=0.75,
+            zorder=0,
+        )
     ax.set_ylabel(ylab, fontsize=11)
     ax.set_xlabel("Storage backend", fontsize=11)
     ax.set_title(title, fontsize=12)
@@ -552,6 +680,7 @@ def plot_multi_metric_bars(
     *,
     title: str,
     baseline_label: str | None = None,
+    reference_line: float | None = None,
 ) -> None:
     """metrics: (key, ylabel_suffix, per-backend values)."""
     if not labels or not metrics:
@@ -574,6 +703,15 @@ def plot_multi_metric_bars(
         ax.bar(labels, yplot, color=c, alpha=0.88)
         if ratio_ok:
             ax.axhline(1.0, color="0.35", linewidth=0.8, linestyle="--", alpha=0.75, zorder=0)
+        elif reference_line is not None:
+            ax.axhline(
+                reference_line,
+                color="0.35",
+                linewidth=0.8,
+                linestyle="--",
+                alpha=0.75,
+                zorder=0,
+            )
         ax.set_ylabel(ylab_plot, fontsize=10)
         ax.set_title(key, fontsize=10)
         ax.grid(axis="y", linestyle=":", alpha=0.5)
@@ -654,6 +792,16 @@ def main() -> None:
         metavar="LABEL",
         help="Plot ratios vs this backend (its bars/lines = 1). Use empty string for raw units.",
     )
+    parser.add_argument(
+        "--noop-parent",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Parent with same data_* layout as --scan-parent; duration and CodeCarbon metrics "
+            "from trainer-instrumented runs are divided by noop baseline per backend (extra *_ratio_noop.png)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.scan_parent is not None:
@@ -681,7 +829,9 @@ def main() -> None:
     duration_ms: list[tuple[str, float]] = []
     phase_rows: dict[str, dict[str, float]] = {}
     coarse_vals: dict[str, dict[str, float]] = {}
+    cc_full_vals: dict[str, dict[str, float]] = {}
     e2e_vals: dict[str, dict[str, float]] = {}
+    baseline_ms: dict[str, float] = {}
 
     extra_run_patterns = [
         "resource_util_run_*.csv",
@@ -689,6 +839,8 @@ def main() -> None:
         "*_phase_timing_*_summary.csv",
         "run_*_cc_full_coarse_rank_*.csv",
         "memory_run_*_cc_full_coarse_rank_*.csv",
+        "run_*_cc_full_rank_*.csv",
+        "memory_run_*_cc_full_rank_*.csv",
     ]
 
     for root, blabel in backends:
@@ -697,50 +849,27 @@ def main() -> None:
             _warn_missing(blabel, "batch/worker cell directory", cell)
             continue
 
-        _warn_extra_runs(cell, blabel, extra_run_patterns)
-
-        ru_path = _resolve_resource_util_csv(cell, blabel)
-        if ru_path is not None:
-            df = pd.read_csv(ru_path)
-            ru_series.append((blabel, df))
-
-        dur_path = _resolve_train_duration_txt(cell, blabel)
-        if dur_path is not None:
-            ms = _parse_duration_ms(dur_path)
-            if ms is None:
-                warnings.warn(
-                    f"[{blabel}] could not parse duration_ms from {dur_path}",
-                    UserWarning,
-                )
-            else:
-                duration_ms.append((blabel, ms))
-
-        pr = _collect_phase_timing_row(cell, blabel)
+        df_ru, dur_ms, bl_ms, pr, coarse, cc_full, e2e = _gather_backend_metrics(
+            cell,
+            blabel,
+            extra_run_patterns,
+            want_resource_util=True,
+            want_phase_timing=True,
+        )
+        if df_ru is not None:
+            ru_series.append((blabel, df_ru))
+        if dur_ms is not None:
+            duration_ms.append((blabel, dur_ms))
+        if bl_ms is not None:
+            baseline_ms[blabel] = bl_ms
         if pr:
             phase_rows[blabel] = pr
-
-        mem = _uses_memory_prefix(blabel)
-        cc_glob = (
-            f"{RUN_TOKEN_MEM}cc_full_coarse_rank_*.csv"
-            if mem
-            else f"{RUN_TOKEN_NONMEM}cc_full_coarse_rank_*.csv"
-        )
-        cc_path = _glob_single(cell, blabel, cc_glob, "cc_full_coarse")
-        if cc_path is not None:
-            scal = _codecarbon_scalars(cc_path)
-            if scal:
-                coarse_vals[blabel] = scal
-
-        e2e_glob = (
-            f"{RUN_TOKEN_MEM}cc_e2e_full_rank_*.csv"
-            if mem
-            else f"{RUN_TOKEN_NONMEM}cc_e2e_full_rank_*.csv"
-        )
-        e2e_path = _glob_single(cell, blabel, e2e_glob, "cc_e2e_full")
-        if e2e_path is not None:
-            scal = _codecarbon_scalars(e2e_path)
-            if scal:
-                e2e_vals[blabel] = scal
+        if coarse:
+            coarse_vals[blabel] = coarse
+        if cc_full:
+            cc_full_vals[blabel] = cc_full
+        if e2e:
+            e2e_vals[blabel] = e2e
 
     t_note = f", vs {baseline}" if baseline else ""
     plot_resource_util_overlay(
@@ -775,6 +904,67 @@ def main() -> None:
     else:
         warnings.warn("Skipping train_duration figure: no data", UserWarning)
 
+    # --- Overhead: instrumented duration / baseline (noop) duration ---
+    if duration_ms and baseline_ms:
+        overhead_labels: list[str] = []
+        overhead_ratios: list[float] = []
+        for blabel, dur in duration_ms:
+            bl = baseline_ms.get(blabel)
+            if bl is not None and bl > 0:
+                overhead_labels.append(blabel)
+                overhead_ratios.append(dur / bl)
+        if overhead_ratios:
+            overhead_pcts = [(r - 1.0) * 100.0 for r in overhead_ratios]
+            plot_simple_bars(
+                overhead_labels,
+                overhead_pcts,
+                "Overhead (%)",
+                out_dir / f"compare_train_duration_overhead_run_{RUN_INDEX}.png",
+                title=f"Duration overhead vs noop (run {RUN_INDEX}) batch={batch} worker={worker}{t_note}",
+                baseline_label=None,
+            )
+    elif duration_ms:
+        warnings.warn("Skipping overhead figure: no baseline_* files found", UserWarning)
+
+    # --- Estimated carbon/energy overhead (from duration ratio) ---
+    # For each CodeCarbon source, estimate noop value as:
+    #   noop_metric ≈ instrumented_metric × (baseline_dur / instrumented_dur)
+    # Then overhead_pct = (instrumented - noop_est) / noop_est × 100
+    dur_map: dict[str, float] = {lbl: v for lbl, v in duration_ms}
+    cc_sources: list[tuple[str, str, dict[str, dict[str, float]]]] = [
+        ("coarse", "CodeCarbon coarse", coarse_vals),
+        ("full", "CodeCarbon full-run", cc_full_vals),
+        ("e2e", "CodeCarbon e2e", e2e_vals),
+    ]
+    for src_tag, src_title, src_vals in cc_sources:
+        if not src_vals or not baseline_ms:
+            continue
+        for metric_key, metric_unit in (
+            ("energy_consumed", "Energy overhead (%)"),
+            ("emissions", "Emissions overhead (%)"),
+        ):
+            oh_labels: list[str] = []
+            oh_pcts: list[float] = []
+            for blabel in src_vals:
+                inst_dur = dur_map.get(blabel)
+                bl_dur = baseline_ms.get(blabel)
+                val = src_vals[blabel].get(metric_key)
+                if inst_dur and bl_dur and bl_dur > 0 and inst_dur > 0 and val is not None and np.isfinite(val):
+                    noop_est = val * (bl_dur / inst_dur)
+                    if noop_est > 0:
+                        oh_labels.append(blabel)
+                        oh_pcts.append((val - noop_est) / noop_est * 100.0)
+            if oh_pcts:
+                safe_metric = metric_key.replace("_", "-")
+                plot_simple_bars(
+                    oh_labels,
+                    oh_pcts,
+                    metric_unit,
+                    out_dir / f"compare_{src_tag}_{safe_metric}_overhead_run_{RUN_INDEX}.png",
+                    title=f"{src_title} {metric_key} overhead vs noop (run {RUN_INDEX}) batch={batch} worker={worker}{t_note}",
+                    baseline_label=None,
+                )
+
     if coarse_vals:
         labels = list(coarse_vals.keys())
         metrics = []
@@ -796,6 +986,28 @@ def main() -> None:
             )
     else:
         warnings.warn("Skipping codecarbon coarse figure: no data", UserWarning)
+
+    if cc_full_vals:
+        labels = list(cc_full_vals.keys())
+        metrics = []
+        for key, ylab in (
+            ("duration", "Duration (s)"),
+            ("energy_consumed", "Energy (kWh)"),
+            ("emissions", "Emissions (kg CO2eq)"),
+        ):
+            vals = [cc_full_vals[b].get(key, float("nan")) for b in labels]
+            if any(np.isfinite(v) for v in vals):
+                metrics.append((key, ylab, vals))
+        if metrics:
+            plot_multi_metric_bars(
+                labels,
+                metrics,
+                out_dir / f"compare_codecarbon_full_run_{RUN_INDEX}.png",
+                title=f"CodeCarbon full run / step aggregate (run {RUN_INDEX}) batch={batch} worker={worker}{t_note}",
+                baseline_label=baseline,
+            )
+    else:
+        warnings.warn("Skipping codecarbon full (cc_full_rank) figure: no data", UserWarning)
 
     if e2e_vals:
         labels = list(e2e_vals.keys())
@@ -826,6 +1038,180 @@ def main() -> None:
             )
     else:
         warnings.warn("Skipping codecarbon e2e figure: no data", UserWarning)
+
+    # Optional: ratio vs noop (separate reference from --normalize-to storage backend)
+    if args.noop_parent is not None:
+        noop_backends = _scan_roots(args.noop_parent)
+        noop_duration: dict[str, float] = {}
+        noop_coarse: dict[str, dict[str, float]] = {}
+        noop_cc_full: dict[str, dict[str, float]] = {}
+        noop_e2e: dict[str, dict[str, float]] = {}
+        for root, blabel in noop_backends:
+            cell = _cell_dir(root, batch, worker)
+            if not cell.is_dir():
+                continue
+            _ru, dur_ms, _bl, _pr, coarse, cc_full, e2e = _gather_backend_metrics(
+                cell,
+                blabel,
+                extra_run_patterns,
+                want_resource_util=False,
+                want_phase_timing=False,
+            )
+            if dur_ms is not None:
+                noop_duration[blabel] = dur_ms
+            if coarse:
+                noop_coarse[blabel] = coarse
+            if cc_full:
+                noop_cc_full[blabel] = cc_full
+            if e2e:
+                noop_e2e[blabel] = e2e
+
+        if duration_ms and noop_duration:
+            labels_rn: list[str] = []
+            ratios_rn: list[float] = []
+            for lab, ms in duration_ms:
+                base = noop_duration.get(lab)
+                if base is None:
+                    warnings.warn(
+                        f"No noop train_duration for backend {lab!r}; skipping in ratio_noop duration plot",
+                        UserWarning,
+                    )
+                    continue
+                if not np.isfinite(base) or base <= 0:
+                    warnings.warn(
+                        f"Invalid noop train_duration for {lab!r}; skipping in ratio_noop duration plot",
+                        UserWarning,
+                    )
+                    continue
+                if not np.isfinite(ms):
+                    continue
+                labels_rn.append(lab)
+                ratios_rn.append(float(ms) / float(base))
+            if labels_rn:
+                plot_simple_bars(
+                    labels_rn,
+                    ratios_rn,
+                    "Wall time (ratio vs noop)",
+                    out_dir / f"compare_train_duration_run_{RUN_INDEX}_ratio_noop.png",
+                    title=(
+                        f"Train duration vs noop (run {RUN_INDEX}) batch={batch} worker={worker} "
+                        f"(instrumented / noop wall time)"
+                    ),
+                    baseline_label=None,
+                    reference_line=1.0,
+                )
+            else:
+                warnings.warn(
+                    "Skipping compare_train_duration ratio_noop: no overlapping backends with valid noop duration",
+                    UserWarning,
+                )
+        else:
+            warnings.warn(
+                "Skipping compare_train_duration ratio_noop: no duration_ms or empty noop scan",
+                UserWarning,
+            )
+
+
+        if coarse_vals and noop_coarse:
+            labels_c = [b for b in coarse_vals if b in noop_coarse]
+            if labels_c:
+                ratio_metrics: list[tuple[str, str, list[float]]] = []
+                for key, ylab in (
+                    ("duration", "Duration (s)"),
+                    ("energy_consumed", "Energy (kWh)"),
+                    ("emissions", "Emissions (kg CO2eq)"),
+                ):
+                    vals: list[float] = []
+                    ok_any = False
+                    for b in labels_c:
+                        vb = coarse_vals[b].get(key, float("nan"))
+                        nb = noop_coarse[b].get(key, float("nan"))
+                        if np.isfinite(vb) and np.isfinite(nb) and nb > 0:
+                            vals.append(float(vb) / float(nb))
+                            ok_any = True
+                        else:
+                            vals.append(float("nan"))
+                    if ok_any:
+                        ratio_metrics.append((key, f"{ylab} (ratio vs noop)", vals))
+                if ratio_metrics:
+                    plot_multi_metric_bars(
+                        labels_c,
+                        ratio_metrics,
+                        out_dir / f"compare_codecarbon_coarse_run_{RUN_INDEX}_ratio_noop.png",
+                        title=(
+                            f"CodeCarbon full coarse vs noop (run {RUN_INDEX}) "
+                            f"batch={batch} worker={worker}"
+                        ),
+                        baseline_label=None,
+                        reference_line=1.0,
+                    )
+
+        if cc_full_vals and noop_cc_full:
+            labels_f = [b for b in cc_full_vals if b in noop_cc_full]
+            if labels_f:
+                ratio_metrics_f: list[tuple[str, str, list[float]]] = []
+                for key, ylab in (
+                    ("duration", "Duration (s)"),
+                    ("energy_consumed", "Energy (kWh)"),
+                    ("emissions", "Emissions (kg CO2eq)"),
+                ):
+                    vals: list[float] = []
+                    ok_any = False
+                    for b in labels_f:
+                        vb = cc_full_vals[b].get(key, float("nan"))
+                        nb = noop_cc_full[b].get(key, float("nan"))
+                        if np.isfinite(vb) and np.isfinite(nb) and nb > 0:
+                            vals.append(float(vb) / float(nb))
+                            ok_any = True
+                        else:
+                            vals.append(float("nan"))
+                    if ok_any:
+                        ratio_metrics_f.append((key, f"{ylab} (ratio vs noop)", vals))
+                if ratio_metrics_f:
+                    plot_multi_metric_bars(
+                        labels_f,
+                        ratio_metrics_f,
+                        out_dir / f"compare_codecarbon_full_run_{RUN_INDEX}_ratio_noop.png",
+                        title=(
+                            f"CodeCarbon full (cc_full_rank) vs noop (run {RUN_INDEX}) "
+                            f"batch={batch} worker={worker}"
+                        ),
+                        baseline_label=None,
+                        reference_line=1.0,
+                    )
+
+        if e2e_vals and noop_e2e:
+            labels_e = [b for b in e2e_vals if b in noop_e2e]
+            if labels_e:
+                ratio_metrics_e: list[tuple[str, str, list[float]]] = []
+                for key, ylab in (
+                    ("energy_consumed", "Energy (kWh)"),
+                    ("emissions", "Emissions (kg CO2eq)"),
+                ):
+                    vals: list[float] = []
+                    ok_any = False
+                    for b in labels_e:
+                        vb = e2e_vals[b].get(key, float("nan"))
+                        nb = noop_e2e[b].get(key, float("nan"))
+                        if np.isfinite(vb) and np.isfinite(nb) and nb > 0:
+                            vals.append(float(vb) / float(nb))
+                            ok_any = True
+                        else:
+                            vals.append(float("nan"))
+                    if ok_any:
+                        ratio_metrics_e.append((key, f"{ylab} (ratio vs noop)", vals))
+                if ratio_metrics_e:
+                    plot_multi_metric_bars(
+                        labels_e,
+                        ratio_metrics_e,
+                        out_dir / f"compare_codecarbon_e2e_energy_run_{RUN_INDEX}_ratio_noop.png",
+                        title=(
+                            f"CodeCarbon e2e vs noop (run {RUN_INDEX}) "
+                            f"batch={batch} worker={worker}"
+                        ),
+                        baseline_label=None,
+                        reference_line=1.0,
+                    )
 
 
 if __name__ == "__main__":

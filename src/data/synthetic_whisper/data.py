@@ -10,7 +10,8 @@ from transformers import WhisperFeatureExtractor
 data_load_name = "synthetic_whisper"
 
 SAMPLE_RATE = 16000
-CHUNK_SIZE_DEFAULT = 100
+CHUNK_SIZE_DEFAULT = 400
+SAMPLE_SIZE_DEFAULT = 16000
 CHUNKED_FORMAT = "chunked_v1" 
 SHARDED_FORMAT = "sharded_v1"
 MEMMAP_FORMAT = "memmap_v1"
@@ -420,7 +421,7 @@ def load_data(conf: config.Config):
     num_labels = getattr(sc, "num_labels", 10)
     force_regenerate = getattr(sc, "force_regenerate", 0)
     repeat = getattr(sc, "repeat", 1)
-    n_unique = max(1, int(getattr(sc, "num_unique_samples", 7680)))
+    n_unique = max(1, int(getattr(sc, "num_unique_samples", SAMPLE_SIZE_DEFAULT)))
 
     data_type = effective_synthetic_whisper_data_type(sc)
     chunk_size_cfg = max(1, int(getattr(sc, "chunk_size", CHUNK_SIZE_DEFAULT)))

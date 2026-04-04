@@ -13,7 +13,7 @@ class DataConfig(_BaseConfig):
         self._arg_num_unique_samples = _Arg(
             type=int,
             help="Unique synthetic examples for on-disk backends. Ignored when memory_only=1 (pool size is --batch_size).",
-            default=7680,
+            default=16000,
         )
         self._arg_num_labels = _Arg(type=int, help="Number of classes for audio classification.", default=10)
         self._arg_force_regenerate = _Arg(type=int, help="If 1, regenerate data even if file exists (overwrites cache).", default=0)
